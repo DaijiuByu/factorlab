@@ -24,6 +24,10 @@ def validate_panel(panel: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"missing required columns: {', '.join(sorted(missing))}")
     clean = panel.copy()
     clean["date"] = pd.to_datetime(clean["date"], errors="raise").dt.tz_localize(None)
+    if clean["date"].isna().any():
+        raise ValueError("date must not be missing")
+    if clean["ticker"].isna().any():
+        raise ValueError("ticker must not be missing")
     clean["ticker"] = clean["ticker"].astype(str).str.strip()
     clean["close"] = pd.to_numeric(clean["close"], errors="raise")
     if clean["ticker"].eq("").any():
