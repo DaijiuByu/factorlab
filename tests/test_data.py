@@ -21,3 +21,13 @@ class DataTests(unittest.TestCase):
         bad.loc[0, "close"] = 0
         with self.assertRaises(ValueError):
             validate_panel(bad)
+
+    def test_validation_rejects_missing_date_and_ticker(self):
+        missing_date = pd.DataFrame({"date": [None], "ticker": ["A"], "close": [10.0]})
+        with self.assertRaises(ValueError):
+            validate_panel(missing_date)
+        missing_ticker = pd.DataFrame(
+            {"date": ["2024-01-01"], "ticker": [None], "close": [10.0]}
+        )
+        with self.assertRaises(ValueError):
+            validate_panel(missing_ticker)
