@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .data import validate_panel
+from .metrics import compute_asset_metrics
 from .signals import column_factor, low_volatility, momentum, reversal
 
 
@@ -35,6 +36,9 @@ class ResearchResult:
     metrics: dict[str, float | int | None]
     split_metrics: dict[str, dict[str, float | int | None]]
     weights: pd.DataFrame
+    asset_metrics: pd.DataFrame
+    market_summary: pd.DataFrame | None = None
+    data_metadata: dict[str, Any] | None = None
 
 
 def with_forward_returns(panel: pd.DataFrame) -> pd.DataFrame:
@@ -183,11 +187,21 @@ def run_research(
     sector_neutral: bool = False,
     backtest: BacktestConfig | None = None,
     split_date: str | None = None,
+    analysis_start: str | None = None,
+    analysis_end: str | None = None,
+    market_summary: pd.DataFrame | None = None,
+    data_metadata: dict[str, Any] | None = None,
 ) -> ResearchResult:
     """Run factor scoring, IC analysis, and a dollar-neutral backtest."""
 
     panel = validate_panel(panel)
     config = backtest or BacktestConfig()
+    if (
+        analysis_start
+        and analysis_end
+        and pd.Timestamp(analysis_start) > pd.Timestamp(analysis_end)
+    ):
+        raise ValueError("analysis_start must not be after analysis_end")
     if factor == "momentum":
         scored = momentum(panel, lookback, sector_neutral=sector_neutral)
     elif factor == "reversal":
@@ -203,8 +217,19 @@ def run_research(
     else:
         raise ValueError("factor must be momentum, reversal, low_volatility, or column")
     scored = with_forward_returns(scored)
-    ic_by_date = information_coefficient(scored, config.min_assets)
-    daily, weights = _portfolio(scored, config)
+    evaluation = scored
+    if analysis_start is not None:
+        evaluation = evaluation.loc[evaluation["date"] >= pd.Timestamp(analysis_start)]
+    if analysis_end is not None:
+        evaluation = evaluation.loc[evaluation["date"] <= pd.Timestamp(analysis_end)]
+    ic_by_date = information_coefficient(evaluation, config.min_assets)
+    daily, weights = _portfolio(evaluation, config)
+    asset_metrics = compute_asset_metrics(
+        panel,
+        lookback=lookback,
+        start_date=analysis_start,
+        end_date=analysis_end,
+    )
     metrics = _metrics(
         daily["net_return"] if not daily.empty else pd.Series(dtype=float),
         daily["turnover"] if not daily.empty else None,
@@ -241,10 +266,15 @@ def run_research(
             "cost_bps": config.cost_bps,
             "min_assets": config.min_assets,
             "split_date": split_date,
+            "analysis_start": analysis_start,
+            "analysis_end": analysis_end,
         },
         daily=daily,
         ic_by_date=ic_by_date,
         metrics=metrics,
         split_metrics=_split_metrics(daily, split_date),
         weights=weights,
+        asset_metrics=asset_metrics,
+        market_summary=market_summary,
+        data_metadata=data_metadata,
     )
