@@ -8,6 +8,9 @@ import pandas as pd
 from .data import validate_panel
 
 
+METRIC_COLUMNS = ("momentum", "reversal", "volatility", "turnover_pct")
+
+
 def compute_asset_metrics(
     panel: pd.DataFrame,
     *,
@@ -99,3 +102,50 @@ def compute_asset_metrics(
     return result.sort_values(
         ["momentum", "ticker"], ascending=[False, True], na_position="last"
     ).reset_index(drop=True)
+
+
+def compute_metric_summary(
+    panel: pd.DataFrame,
+    *,
+    lookback: int = 20,
+    start_date: str | pd.Timestamp | None = None,
+    end_date: str | pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Aggregate each metric across every available stock for every date."""
+
+    clean = validate_panel(panel)
+    if lookback < 2:
+        raise ValueError("lookback must be at least 2")
+    grouped = clean.groupby("ticker", sort=False)
+    clean["return_1d"] = grouped["close"].pct_change()
+    clean["momentum"] = grouped["close"].transform(
+        lambda series: series / series.shift(lookback) - 1.0
+    )
+    clean["reversal"] = -clean["return_1d"]
+    clean["volatility"] = (
+        clean["return_1d"]
+        .groupby(clean["ticker"], sort=False)
+        .transform(lambda series: series.rolling(lookback).std() * np.sqrt(252))
+    )
+    if "turnover_pct" not in clean:
+        clean["turnover_pct"] = np.nan
+    eligible = clean
+    if start_date is not None:
+        eligible = eligible.loc[eligible["date"] >= pd.Timestamp(start_date)]
+    if end_date is not None:
+        eligible = eligible.loc[eligible["date"] <= pd.Timestamp(end_date)]
+    if eligible.empty:
+        return pd.DataFrame(
+            columns=["date"]
+            + [
+                f"{metric}_{stat}"
+                for metric in METRIC_COLUMNS
+                for stat in ("mean", "median", "std", "count")
+            ]
+        )
+    aggregations = {
+        metric: ["mean", "median", "std", "count"] for metric in METRIC_COLUMNS
+    }
+    summary = eligible.groupby("date", sort=True).agg(aggregations)
+    summary.columns = [f"{metric}_{stat}" for metric, stat in summary.columns]
+    return summary.reset_index()
