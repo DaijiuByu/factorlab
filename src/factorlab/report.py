@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from .research import ResearchResult
+from .visualizations import write_visualizations
 
 
 def _format_metric(value: object) -> str:
@@ -90,6 +91,16 @@ def markdown_report(result: ResearchResult, *, source: str) -> str:
             "",
         ]
     lines += [
+        "## Visualizations",
+        "",
+        "- `asset_metrics_all_stocks.png`: all selected stocks for momentum, reversal, volatility, and turnover.",
+        "- `asset_metrics_heatmap.png`: percentile-rank heatmap with one row per selected stock.",
+        "- `metric_timeseries_all_stocks.png`: daily cross-sectional mean and median across all available stocks.",
+        "- `factor_diagnostics.png`: daily IC and gross/net portfolio equity.",
+        "- `portfolio_turnover_drawdown.png`: portfolio turnover and drawdown.",
+        "",
+    ]
+    lines += [
         "",
         "## Reading this result",
         "",
@@ -117,6 +128,7 @@ def write_artifacts(
     result.ic_by_date.to_csv(destination / "ic_by_date.csv", index=False)
     result.weights.to_csv(destination / "weights.csv", index=False)
     result.asset_metrics.to_csv(destination / "asset_metrics.csv", index=False)
+    result.metric_summary.to_csv(destination / "metric_summary.csv", index=False)
     if result.market_summary is not None:
         result.market_summary.to_csv(destination / "sse_summary.csv", index=False)
     if result.data_metadata is not None:
@@ -138,6 +150,7 @@ def write_artifacts(
     (destination / "report.md").write_text(
         markdown_report(result, source=source), encoding="utf-8"
     )
+    write_visualizations(result, destination)
     if not result.daily.empty:
         import matplotlib
 
