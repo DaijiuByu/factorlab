@@ -166,6 +166,63 @@ def _normalize_history(raw: pd.DataFrame, ticker: str) -> pd.DataFrame:
     )
 
 
+def _fetch_history(
+    ak: Any,
+    ticker: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    adjust: str,
+    retries: int,
+) -> tuple[pd.DataFrame, str]:
+    """Fetch one symbol with bounded retries and an AkShare fallback source."""
+
+    requests = [
+        (
+            "stock_zh_a_hist",
+            lambda: ak.stock_zh_a_hist(
+                symbol=ticker,
+                period="daily",
+                start_date=start.strftime("%Y%m%d"),
+                end_date=end.strftime("%Y%m%d"),
+                adjust=adjust,
+                timeout=30,
+            ),
+        ),
+        (
+            "stock_zh_a_daily",
+            lambda: ak.stock_zh_a_daily(
+                symbol=f"sh{ticker}",
+                start_date=start.strftime("%Y%m%d"),
+                end_date=end.strftime("%Y%m%d"),
+                adjust=adjust,
+            ),
+        ),
+    ]
+    failures: list[str] = []
+    for source, request in requests:
+        for attempt in range(retries + 1):
+            try:
+                raw = request()
+                normalized = _normalize_history(raw, ticker)
+                if normalized.empty:
+                    raise RuntimeError("empty history")
+                if source == "stock_zh_a_daily" and "turnover" in raw:
+                    raw_date_column = "date" if "date" in raw else "日期"
+                    raw_turnover = pd.Series(
+                        pd.to_numeric(raw["turnover"], errors="coerce").to_numpy(),
+                        index=pd.to_datetime(raw[raw_date_column], errors="coerce"),
+                    )
+                    normalized["turnover_pct"] = (
+                        normalized["date"].map(raw_turnover) * 100.0
+                    )
+                return normalized, source
+            except Exception as exc:  # AkShare propagates provider-specific exceptions.
+                failures.append(f"{source} attempt {attempt + 1}: {exc}")
+                if attempt < retries:
+                    time.sleep(min(8.0, 0.8 * (2**attempt)))
+    raise RuntimeError("; ".join(failures)[-1_000:])
+
+
 def _read_cached(
     path: Path, start: pd.Timestamp, end: pd.Timestamp, ticker: str
 ) -> pd.DataFrame | None:
@@ -196,8 +253,8 @@ def fetch_sse_panel(
     adjust: str = "hfq",
     max_stocks: int | None = None,
     cache_dir: str | Path = ".factorlab_cache",
-    sleep_seconds: float = 0.15,
-    retries: int = 2,
+    sleep_seconds: float = 1.0,
+    retries: int = 3,
 ) -> SSEFetchResult:
     """Fetch a warm-started SSE daily panel for a selected calendar window.
 
@@ -225,34 +282,23 @@ def fetch_sse_panel(
     cache_root = Path(cache_dir)
     rows: list[pd.DataFrame] = []
     errors: list[dict[str, str]] = []
+    sources_used: set[str] = set()
     requested = len(universe)
     for index, item in universe.iterrows():
         ticker = str(item["ticker"])
         cache_file = cache_root / f"{ticker}_{adjust or 'raw'}.csv"
         history = _read_cached(cache_file, warmup_start, selected_end, ticker)
         last_error = ""
+        history_source = "cache"
         if history is None:
-            for attempt in range(retries + 1):
-                try:
-                    raw = ak.stock_zh_a_hist(
-                        symbol=ticker,
-                        period="daily",
-                        start_date=warmup_start.strftime("%Y%m%d"),
-                        end_date=selected_end.strftime("%Y%m%d"),
-                        adjust=adjust,
-                    )
-                    history = _normalize_history(raw, ticker)
-                    if history.empty:
-                        raise RuntimeError("empty history")
-                    _write_cache(cache_file, history)
-                    break
-                except (
-                    Exception
-                ) as exc:  # AkShare propagates provider-specific exceptions.
-                    last_error = str(exc)
-                    history = None
-                    if attempt < retries:
-                        time.sleep(min(2.0, 0.5 * (2**attempt)))
+            try:
+                history, history_source = _fetch_history(
+                    ak, ticker, warmup_start, selected_end, adjust, retries
+                )
+                _write_cache(cache_file, history)
+            except RuntimeError as exc:
+                last_error = str(exc)
+                history = None
             if sleep_seconds and index + 1 < requested:
                 time.sleep(sleep_seconds)
         if history is None:
@@ -261,12 +307,15 @@ def fetch_sse_panel(
                     "ticker": ticker,
                     "name": str(item.get("name", "")),
                     "error": last_error[-500:],
+                    "source": "stock_zh_a_hist -> stock_zh_a_daily",
                 }
             )
             continue
         history["name"] = str(item.get("name", ""))
         history["board"] = str(item.get("board", ""))
+        history["history_source"] = history_source
         history["listed_date"] = item.get("listed_date", pd.NaT)
+        sources_used.add(history_source)
         rows.append(history)
 
     if not rows:
@@ -279,12 +328,13 @@ def fetch_sse_panel(
         panel=panel,
         market_summary=summary,
         universe=universe,
-        errors=pd.DataFrame(errors, columns=["ticker", "name", "error"]),
+        errors=pd.DataFrame(errors, columns=["ticker", "name", "error", "source"]),
         metadata={
             "provider": "akshare",
             "summary_interface": "stock_sse_summary",
             "universe_interface": "stock_info_sh_name_code",
-            "history_interface": "stock_zh_a_hist",
+            "history_interface": "stock_zh_a_hist (fallback: stock_zh_a_daily)",
+            "history_sources_used": sorted(sources_used),
             "selected_start": selected_start.strftime("%Y-%m-%d"),
             "selected_end": selected_end.strftime("%Y-%m-%d"),
             "warmup_start": warmup_start.strftime("%Y-%m-%d"),
