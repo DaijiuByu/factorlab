@@ -10,4 +10,6 @@ demo_panel.csv
 .test_install*/
 .test_dist*/
 .test_akshare*/
+.runtime_akshare*/
+run_results_*/
 .ruff_cache/
