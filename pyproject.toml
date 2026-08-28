@@ -22,6 +22,7 @@ dependencies = [
   "numpy>=1.24",
   "pandas>=2.0",
   "matplotlib>=3.7",
+  "akshare>=1.18.64",
 ]
 
 [project.scripts]
