@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .data import validate_panel
-from .metrics import compute_asset_metrics
+from .metrics import compute_asset_metrics, compute_metric_summary
 from .signals import column_factor, low_volatility, momentum, reversal
 
 
@@ -37,6 +37,7 @@ class ResearchResult:
     split_metrics: dict[str, dict[str, float | int | None]]
     weights: pd.DataFrame
     asset_metrics: pd.DataFrame
+    metric_summary: pd.DataFrame
     market_summary: pd.DataFrame | None = None
     data_metadata: dict[str, Any] | None = None
 
@@ -230,6 +231,12 @@ def run_research(
         start_date=analysis_start,
         end_date=analysis_end,
     )
+    metric_summary = compute_metric_summary(
+        panel,
+        lookback=lookback,
+        start_date=analysis_start,
+        end_date=analysis_end,
+    )
     metrics = _metrics(
         daily["net_return"] if not daily.empty else pd.Series(dtype=float),
         daily["turnover"] if not daily.empty else None,
@@ -275,6 +282,7 @@ def run_research(
         split_metrics=_split_metrics(daily, split_date),
         weights=weights,
         asset_metrics=asset_metrics,
+        metric_summary=metric_summary,
         market_summary=market_summary,
         data_metadata=data_metadata,
     )

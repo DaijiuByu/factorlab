@@ -119,8 +119,14 @@ Live output additionally contains:
 ```text
 artifacts_live/
 ├── asset_metrics.csv       # latest selected-window metrics per ticker
+├── asset_metrics_all_stocks.png
+├── asset_metrics_heatmap.png
 ├── data_metadata.json      # dates, interfaces, universe and success counts
+├── factor_diagnostics.png
 ├── fetch_errors.csv        # symbols that failed after retries
+├── metric_summary.csv
+├── metric_timeseries_all_stocks.png
+├── portfolio_turnover_drawdown.png
 ├── sse_summary.csv         # latest stock_sse_summary snapshot
 ├── universe.csv            # symbols requested
 └── report.md
@@ -131,6 +137,12 @@ reversal, annualized realized volatility, latest turnover percentage, and
 lookback-average turnover. The report also includes IC and portfolio metrics
 for the selected interval.
 
+The visualization outputs are multi-stock diagnostics. Each metric panel plots
+every selected ticker, the heatmap has one row per ticker, and the time-series
+figure shows cross-sectional means and medians across all available stocks.
+Ticker labels are sampled when the universe is large for readability, but all
+observations remain in the plots and CSV outputs.
+
 The latest market snapshot is taken after calling `stock_sse_summary()` once.
 The exchange documents that this interface returns the most recent trading-day
 overview and that same-day figures may only appear after the close; therefore a
@@ -140,10 +152,16 @@ The output directory contains:
 
 ```text
 artifacts/
+├── asset_metrics_all_stocks.png
+├── asset_metrics_heatmap.png
 ├── daily_returns.csv
 ├── equity_curve.png
+├── factor_diagnostics.png
 ├── ic_by_date.csv
+├── metric_summary.csv
+├── metric_timeseries_all_stocks.png
 ├── metrics.json
+├── portfolio_turnover_drawdown.png
 ├── report.md
 └── weights.csv
 ```

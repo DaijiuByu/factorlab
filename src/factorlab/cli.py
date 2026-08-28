@@ -92,10 +92,10 @@ def _parser() -> argparse.ArgumentParser:
         "--sleep",
         dest="sleep_seconds",
         type=float,
-        default=0.15,
+        default=1.0,
         help="seconds between history requests",
     )
-    live.add_argument("--retries", type=int, default=2)
+    live.add_argument("--retries", type=int, default=3)
     return parser
 
 
