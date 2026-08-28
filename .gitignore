@@ -7,6 +7,7 @@ build/
 *.egg-info/
 artifacts/
 demo_panel.csv
-.test_install/
-.test_dist/
+.test_install*/
+.test_dist*/
+.test_akshare*/
 .ruff_cache/

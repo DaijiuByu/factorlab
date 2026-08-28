@@ -63,6 +63,32 @@ def markdown_report(result: ResearchResult, *, source: str) -> str:
                 f"| {segment} | {_format_metric(metrics.get('total_return'))} | "
                 f"{_format_metric(metrics.get('sharpe'))} | {_format_metric(metrics.get('max_drawdown'))} |"
             )
+    if not result.asset_metrics.empty:
+        lines += [
+            "",
+            "## Latest asset metrics",
+            "",
+            "| Ticker | As of | Momentum | Reversal | Volatility | Turnover (latest) |",
+            "|---|---|---:|---:|---:|---:|",
+        ]
+        for _, row in result.asset_metrics.head(10).iterrows():
+            lines.append(
+                f"| {row['ticker']} | {row['asof_date'].date()} | {_format_metric(row['momentum'])} | "
+                f"{_format_metric(row['reversal'])} | {_format_metric(row['volatility'])} | "
+                f"{_format_metric(row['turnover_pct'])} |"
+            )
+        lines.append("")
+    if result.market_summary is not None and not result.market_summary.empty:
+        lines += [
+            "## SSE market snapshot",
+            "",
+            "The snapshot below is the latest exchange overview returned by `stock_sse_summary`.",
+            "",
+            "```text",
+            result.market_summary.to_string(index=False),
+            "```",
+            "",
+        ]
     lines += [
         "",
         "## Reading this result",
@@ -70,6 +96,7 @@ def markdown_report(result: ResearchResult, *, source: str) -> str:
         "- `forward_return` is close(t+1) / close(t) - 1. The score is formed at t.",
         "- IC is daily Spearman rank correlation between score and next-session return.",
         "- Portfolio weights are dollar-neutral and gross 1.0; net return subtracts turnover × cost.",
+        "- Asset metrics are the last available observation per ticker in the selected window.",
         "- The final row of each ticker has no next-session return and is excluded.",
         "- Synthetic demo data is for plumbing checks only; it is not evidence of alpha.",
         "",
@@ -89,6 +116,14 @@ def write_artifacts(
     result.daily.to_csv(destination / "daily_returns.csv", index=False)
     result.ic_by_date.to_csv(destination / "ic_by_date.csv", index=False)
     result.weights.to_csv(destination / "weights.csv", index=False)
+    result.asset_metrics.to_csv(destination / "asset_metrics.csv", index=False)
+    if result.market_summary is not None:
+        result.market_summary.to_csv(destination / "sse_summary.csv", index=False)
+    if result.data_metadata is not None:
+        (destination / "data_metadata.json").write_text(
+            json.dumps(result.data_metadata, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     (destination / "metrics.json").write_text(
         json.dumps(
             {
