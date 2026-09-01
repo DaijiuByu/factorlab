@@ -26,6 +26,31 @@ Given a CSV with one row per `date` and `ticker`, FactorLab can:
 
 The default workflow does not need a vendor account or network access.
 
+## Research workflow
+
+FactorLab 0.2 adds a small set of research-layer commands around the original
+factor and portfolio analysis:
+
+```text
+CSV / AkShare -> quality audit -> features -> walk-forward Alpha
+                                      -> formula review -> backtest -> plots
+```
+
+- `quality`: separates hard-clean rows, warnings, and quarantine rows.
+- `features`: builds point-in-time price/liquidity features and causal rolling
+  Fourier features.
+- `model`: trains a chronological Ridge, Elastic Net, tree, Bayesian shrinkage,
+  LightGBM, or XGBoost regressor and writes out-of-sample Alpha scores.
+- `model-backtest`: feeds those out-of-sample scores into the existing
+  cost-aware long/short backtest.
+- `ai propose`: optionally asks DeepSeek for one JSON factor proposal.
+- `ai validate`: validates and evaluates the proposal using a small formula
+  grammar with no `eval` or generated code execution.
+
+The default models are deliberately CPU-friendly. LightGBM, XGBoost, VectorBT,
+Polars, DuckDB, and PyMC remain optional extras so a basic CSV workflow stays
+small and deterministic.
+
 The live workflow uses three AkShare calls:
 
 - `stock_sse_summary()` for the latest Shanghai Stock Exchange market overview;
@@ -74,6 +99,76 @@ factorlab analyze \
   --min-assets 20 \
   --split-date 2020-01-01
 ```
+
+Audit and build features:
+
+```bash
+factorlab quality --input demo_panel.csv --output quality_artifacts
+factorlab features --input demo_panel.csv --output features.csv --lookbacks 5,20,60 --fft-window 32
+```
+
+Train an out-of-sample Alpha model and backtest its predictions:
+
+```bash
+factorlab model \
+  --input demo_panel.csv \
+  --output model_artifacts \
+  --model bayesian_shrinkage \
+  --train-days 252 \
+  --test-days 21 \
+  --purge-days 1
+
+factorlab model-backtest \
+  --input demo_panel.csv \
+  --predictions model_artifacts/predictions.csv \
+  --output model_backtest_artifacts
+```
+
+The model command uses chronological folds. The score on date `t` is trained
+only with dates before the test block, and the label is a later return. A model
+prediction is treated as a candidate factor, not as proof of an exploitable
+strategy.
+
+Optional third-party extras:
+
+```bash
+python -m pip install -e ".[backtest,boosting]"
+```
+
+The project keeps a small reference backtester as the default. To cross-check
+the same model predictions with VectorBT:
+
+```bash
+python -m pip install -e ".[backtest]"
+factorlab model-backtest \
+  --input demo_panel.csv \
+  --predictions model_artifacts/predictions.csv \
+  --engine vectorbt \
+  --output vectorbt_artifacts
+```
+
+The VectorBT adapter shifts a score from `t` to the next available session
+before creating target weights. This makes the framework comparison use the
+same signal timing as the reference engine.
+
+Ask DeepSeek for a reviewable factor idea:
+
+```powershell
+$env:DEEPSEEK_API_KEY="your-key"
+factorlab ai propose `
+  --question "设计一个适合沪市股票的短期反转因子" `
+  --output proposal.json
+
+factorlab ai validate `
+  --formula "rank(reversal(close,5))" `
+  --input demo_panel.csv `
+  --output proposal_scores.csv
+```
+
+The API key is read only from the environment. The assistant returns metadata
+and a formula from the safe allow-list; it cannot access the repository, write
+code, or place trades. DeepSeek's JSON output mode is documented at
+https://api-docs.deepseek.com/guides/json_mode/.
 
 ## Use real SSE data
 
@@ -166,6 +261,10 @@ artifacts/
 └── weights.csv
 ```
 
+`model_artifacts/` contains `predictions.csv`, `folds.csv`,
+`feature_importance.csv`, `metrics.json`, `model_predictions.png`, and
+`model_feature_importance.png`.
+
 For a provided point-in-time factor column:
 
 ```bash
@@ -217,6 +316,14 @@ ruff check src tests examples
 
 The tests include a future-data mutation check: changing the final close for a
 ticker must not change any earlier signal.
+
+The test suite also covers Fourier causality, data-quality quarantine, Bayesian
+uncertainty, model walk-forward folds, formula injection rejection, and
+multi-stock visualization output.
+
+The code is organized into separate data, feature, model, AI, backtest, and
+report layers so a new factor or model can be added without changing the data
+source or portfolio accounting.
 
 The synthetic example deliberately has no claim of predictive power. It exists
 so the code path is easy to run in a fresh checkout.
