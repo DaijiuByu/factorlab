@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 dist/
+dist_final*/
 build/
 *.egg-info/
 artifacts/
@@ -12,4 +13,7 @@ demo_panel.csv
 .test_akshare*/
 .runtime_akshare*/
 run_results_*/
+model_artifacts/
+features.csv
+quality_artifacts/
 .ruff_cache/
