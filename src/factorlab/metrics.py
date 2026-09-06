@@ -11,6 +11,79 @@ from .data import validate_panel
 METRIC_COLUMNS = ("momentum", "reversal", "volatility", "turnover_pct")
 
 
+def newey_west_tstat(values: pd.Series, *, lags: int | None = None) -> float | None:
+    """Return a HAC/Newey-West t-statistic for a time series.
+
+    IC observations are serially correlated in practice.  This small
+    dependency-free implementation uses Bartlett weights and a conservative
+    automatic lag choice, making the reported significance less optimistic
+    than an IID t-statistic while keeping the calculation auditable.
+    """
+
+    series = pd.to_numeric(values, errors="coerce").dropna().astype(float)
+    n = len(series)
+    if n < 2:
+        return None
+    mean = float(series.mean())
+    centered = series.to_numpy() - mean
+    if lags is None:
+        lags = max(0, min(n - 1, int(4 * (n / 100) ** (2 / 9))))
+    lags = max(0, min(int(lags), n - 1))
+    variance = float(np.dot(centered, centered) / n)
+    for lag in range(1, lags + 1):
+        covariance = float(np.dot(centered[lag:], centered[:-lag]) / n)
+        variance += 2.0 * (1.0 - lag / (lags + 1.0)) * covariance
+    if not np.isfinite(variance) or variance <= 0:
+        return None
+    return float(mean / np.sqrt(variance / n))
+
+
+def factor_quantile_returns(
+    scored: pd.DataFrame,
+    *,
+    score_column: str = "score",
+    return_column: str = "forward_return",
+    quantiles: int = 5,
+) -> pd.DataFrame:
+    """Calculate equal-weight forward returns for each daily score bucket.
+
+    Buckets are assigned using a stable cross-sectional rank, avoiding
+    ``qcut`` failures when ties are common.  The result is intentionally long
+    format so it can be plotted or joined to other experiment metadata.
+    """
+
+    if quantiles < 2:
+        raise ValueError("quantiles must be at least 2")
+    required = {"date", score_column, return_column}
+    missing = required - set(scored.columns)
+    if missing:
+        raise ValueError(f"missing columns: {', '.join(sorted(missing))}")
+    rows: list[dict[str, object]] = []
+    usable = scored.dropna(subset=[score_column, return_column]).copy()
+    for date, group in usable.groupby("date", sort=True):
+        if group.empty:
+            continue
+        ranks = group[score_column].rank(method="first", pct=True)
+        bucket = np.ceil(ranks * quantiles).clip(1, quantiles).astype(int)
+        for label, bucket_group in group.assign(_quantile=bucket).groupby(
+            "_quantile", sort=True
+        ):
+            returns = pd.to_numeric(bucket_group[return_column], errors="coerce").dropna()
+            if returns.empty:
+                continue
+            rows.append(
+                {
+                    "date": date,
+                    "quantile": int(label),
+                    "n_assets": int(len(returns)),
+                    "mean_return": float(returns.mean()),
+                }
+            )
+    return pd.DataFrame(
+        rows, columns=["date", "quantile", "n_assets", "mean_return"]
+    )
+
+
 def compute_asset_metrics(
     panel: pd.DataFrame,
     *,

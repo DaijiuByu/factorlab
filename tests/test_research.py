@@ -36,6 +36,8 @@ class ResearchTests(unittest.TestCase):
             result.weights["date"].nunique(), result.daily["date"].nunique()
         )
         self.assertIn("mean_ic", result.metrics)
+        self.assertIn("ic_tstat_newey_west", result.metrics)
+        self.assertFalse(result.quantile_returns.empty)
         self.assertTrue(np.isfinite(result.metrics["total_return"]))
 
     def test_column_factor_and_costs(self):

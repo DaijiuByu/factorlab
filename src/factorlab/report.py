@@ -49,6 +49,7 @@ def markdown_report(result: ResearchResult, *, source: str) -> str:
         "icir",
         "ic_positive_ratio",
         "ic_observations",
+        "ic_tstat_newey_west",
     ):
         lines.append(f"| {key} | {_format_metric(result.metrics.get(key))} |")
     if result.split_metrics:
@@ -78,6 +79,25 @@ def markdown_report(result: ResearchResult, *, source: str) -> str:
                 f"{_format_metric(row['reversal'])} | {_format_metric(row['volatility'])} | "
                 f"{_format_metric(row['turnover_pct'])} |"
             )
+        lines.append("")
+    if not result.quantile_returns.empty:
+        summary = (
+            result.quantile_returns.groupby("quantile", sort=True)["mean_return"]
+            .mean()
+            .sort_index()
+        )
+        lines += [
+            "## Factor quantile returns",
+            "",
+            "Equal-weight next-session returns by daily score bucket (Q1 is lowest score).",
+            "",
+            "| Quantile | Mean forward return |",
+            "|---:|---:|",
+        ]
+        lines += [
+            f"| Q{int(quantile)} | {_format_metric(value)} |"
+            for quantile, value in summary.items()
+        ]
         lines.append("")
     if result.market_summary is not None and not result.market_summary.empty:
         lines += [
@@ -129,6 +149,7 @@ def write_artifacts(
     result.weights.to_csv(destination / "weights.csv", index=False)
     result.asset_metrics.to_csv(destination / "asset_metrics.csv", index=False)
     result.metric_summary.to_csv(destination / "metric_summary.csv", index=False)
+    result.quantile_returns.to_csv(destination / "quantile_returns.csv", index=False)
     if result.market_summary is not None:
         result.market_summary.to_csv(destination / "sse_summary.csv", index=False)
     if result.data_metadata is not None:
@@ -136,6 +157,12 @@ def write_artifacts(
             json.dumps(result.data_metadata, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        run_manifest = result.data_metadata.get("run_manifest")
+        if run_manifest is not None:
+            (destination / "run_manifest.json").write_text(
+                json.dumps(run_manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
     (destination / "metrics.json").write_text(
         json.dumps(
             {

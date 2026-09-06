@@ -19,6 +19,7 @@ Given a CSV with one row per `date` and `ticker`, FactorLab can:
 - winsorize and z-score signals within each date;
 - optionally demean signals within date/sector buckets;
 - calculate daily Spearman IC, mean IC, ICIR, and positive-IC ratio;
+- report a Newey-West/HAC IC t-statistic and daily score-quantile returns;
 - form a dollar-neutral top/bottom quantile portfolio;
 - charge explicit turnover-based transaction costs;
 - report annualized return, volatility, Sharpe, drawdown, hit rate, and turnover;
@@ -257,7 +258,9 @@ artifacts/
 ├── metric_timeseries_all_stocks.png
 ├── metrics.json
 ├── portfolio_turnover_drawdown.png
+├── quantile_returns.csv
 ├── report.md
+├── run_manifest.json
 └── weights.csv
 ```
 

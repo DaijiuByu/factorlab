@@ -9,7 +9,13 @@ import numpy as np
 import pandas as pd
 
 from .data import validate_panel
-from .metrics import compute_asset_metrics, compute_metric_summary
+from .metrics import (
+    compute_asset_metrics,
+    compute_metric_summary,
+    factor_quantile_returns,
+    newey_west_tstat,
+)
+from .provenance import build_run_manifest
 from .signals import column_factor, low_volatility, momentum, reversal
 
 
@@ -38,6 +44,7 @@ class ResearchResult:
     weights: pd.DataFrame
     asset_metrics: pd.DataFrame
     metric_summary: pd.DataFrame
+    quantile_returns: pd.DataFrame
     market_summary: pd.DataFrame | None = None
     data_metadata: dict[str, Any] | None = None
 
@@ -251,6 +258,7 @@ def run_research(
                 else None,
                 "ic_positive_ratio": float((ic_by_date["ic"] > 0).mean()),
                 "ic_observations": int(len(ic_by_date)),
+                "ic_tstat_newey_west": newey_west_tstat(ic_by_date["ic"]),
             }
         )
     else:
@@ -260,22 +268,32 @@ def run_research(
                 "icir": None,
                 "ic_positive_ratio": None,
                 "ic_observations": 0,
+                "ic_tstat_newey_west": None,
             }
         )
+    quantile_returns = factor_quantile_returns(evaluation, quantiles=5)
+    run_config = {
+        "factor": factor,
+        "lookback": lookback,
+        "raw_column": raw_column,
+        "direction": direction,
+        "sector_neutral": sector_neutral,
+        "quantile": config.quantile,
+        "cost_bps": config.cost_bps,
+        "min_assets": config.min_assets,
+        "split_date": split_date,
+        "analysis_start": analysis_start,
+        "analysis_end": analysis_end,
+    }
+    metadata = dict(data_metadata or {})
+    metadata["run_manifest"] = build_run_manifest(
+        panel,
+        config=run_config,
+        source="run_research",
+        data_metadata=data_metadata,
+    )
     return ResearchResult(
-        config={
-            "factor": factor,
-            "lookback": lookback,
-            "raw_column": raw_column,
-            "direction": direction,
-            "sector_neutral": sector_neutral,
-            "quantile": config.quantile,
-            "cost_bps": config.cost_bps,
-            "min_assets": config.min_assets,
-            "split_date": split_date,
-            "analysis_start": analysis_start,
-            "analysis_end": analysis_end,
-        },
+        config=run_config,
         daily=daily,
         ic_by_date=ic_by_date,
         metrics=metrics,
@@ -283,6 +301,7 @@ def run_research(
         weights=weights,
         asset_metrics=asset_metrics,
         metric_summary=metric_summary,
+        quantile_returns=quantile_returns,
         market_summary=market_summary,
-        data_metadata=data_metadata,
+        data_metadata=metadata,
     )
