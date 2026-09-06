@@ -39,3 +39,18 @@ class BacktestAdapterTests(unittest.TestCase):
             self.assertIn("VectorBT", str(error))
         else:
             self.assertIsNotNone(result.stats)
+
+    def test_target_weights_honor_position_cap(self):
+        dates = pd.date_range("2024-01-01", periods=3)
+        panel = pd.DataFrame(
+            {
+                "date": dates.repeat(10),
+                "ticker": [f"A{index}" for index in range(10)] * 3,
+                "close": [10.0 + index for index in range(10)] * 3,
+                "alpha_score": list(range(10)) * 3,
+            }
+        )
+        _, weights = target_weights_from_scores(
+            panel, quantile=0.2, min_assets=10, max_position_weight=0.3
+        )
+        self.assertLessEqual(weights.abs().max().max(), 0.3 + 1e-12)

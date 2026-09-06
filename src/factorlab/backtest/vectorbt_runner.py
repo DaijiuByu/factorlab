@@ -20,6 +20,7 @@ def target_weights_from_scores(
     score_column: str = "alpha_score",
     quantile: float = 0.2,
     min_assets: int = 10,
+    max_position_weight: float | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Convert point-in-time scores into next-session target weights."""
 
@@ -27,6 +28,8 @@ def target_weights_from_scores(
         raise ValueError("panel must contain close and the score column")
     if not 0.01 <= quantile <= 0.49:
         raise ValueError("quantile must be between 0.01 and 0.49")
+    if max_position_weight is not None and not 0 < max_position_weight <= 0.5:
+        raise ValueError("max_position_weight must be between 0 and 0.5")
     frame = panel.copy()
     frame["date"] = pd.to_datetime(frame["date"], errors="raise")
     frame["ticker"] = frame["ticker"].astype(str)
@@ -43,10 +46,28 @@ def target_weights_from_scores(
         ranked = group.sort_values([score_column, "ticker"], kind="stable")
         shorts = ranked.head(count)["ticker"].tolist()
         longs = ranked.tail(count)["ticker"].tolist()
-        weights.loc[date, longs] = 0.5 / len(longs)
-        weights.loc[date, shorts] = -0.5 / len(shorts)
+        weights.loc[date, longs] = _side_weights(longs, 0.5, max_position_weight)
+        weights.loc[date, shorts] = _side_weights(shorts, -0.5, max_position_weight)
     # A score observed at t is tradable from t+1 onward.
     return prices, weights.shift(1).fillna(0.0)
+
+
+def _side_weights(names: list[str], gross: float, cap: float | None) -> list[float]:
+    if cap is None:
+        return [gross / len(names)] * len(names)
+    magnitude = abs(gross)
+    if cap * len(names) + 1e-12 < magnitude:
+        raise ValueError(
+            "max_position_weight is too small for the selected quantile portfolio"
+        )
+    remaining = magnitude
+    result: list[float] = []
+    for index in range(len(names)):
+        slots = len(names) - index
+        value = min(cap, remaining / slots)
+        result.append(float(value if gross > 0 else -value))
+        remaining -= value
+    return result
 
 
 def run_vectorbt(

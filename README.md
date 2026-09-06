@@ -22,7 +22,9 @@ Given a CSV with one row per `date` and `ticker`, FactorLab can:
 - report a Newey-West/HAC IC t-statistic and daily score-quantile returns;
 - form a dollar-neutral top/bottom quantile portfolio;
 - charge explicit turnover-based transaction costs;
-- report annualized return, volatility, Sharpe, drawdown, hit rate, and turnover;
+- enforce an optional per-name position cap while preserving long/short exposure;
+- compare net performance across a transaction-cost sensitivity grid;
+- report annualized return, volatility, Sharpe, Sortino, Calmar, drawdown, hit rate, and turnover;
 - write CSV/JSON/Markdown outputs and an equity curve PNG.
 
 The default workflow does not need a vendor account or network access.
@@ -44,6 +46,9 @@ CSV / AkShare -> quality audit -> features -> walk-forward Alpha
   LightGBM, or XGBoost regressor and writes out-of-sample Alpha scores.
 - `model-backtest`: feeds those out-of-sample scores into the existing
   cost-aware long/short backtest.
+- `experiment`: runs a complete quality-audit and research pipeline from one
+  versionable JSON specification.
+- `cost-sensitivity`: writes a table showing how fees change return and Sharpe.
 - `ai propose`: optionally asks DeepSeek for one JSON factor proposal.
 - `ai validate`: validates and evaluates the proposal using a small formula
   grammar with no `eval` or generated code execution.
@@ -99,6 +104,35 @@ factorlab analyze \
   --cost-bps 5 \
   --min-assets 20 \
   --split-date 2020-01-01
+```
+
+Apply a per-name cap and make the study replayable from JSON:
+
+```bash
+factorlab analyze --input demo_panel.csv --output artifacts \
+  --factor momentum --max-position-weight 0.05
+
+factorlab experiment --config experiment.json
+factorlab cost-sensitivity --input demo_panel.csv --output costs.csv \
+  --costs-bps 0,5,10,25,50
+```
+
+Example `experiment.json` (commit this file with a study so reviewers can
+reproduce the exact settings):
+
+```json
+{
+  "input": "demo_panel.csv",
+  "output": "artifacts",
+  "factor": "momentum",
+  "lookback": 20,
+  "quantile": 0.2,
+  "cost_bps": 5,
+  "min_assets": 20,
+  "max_position_weight": 0.15,
+  "sector_neutral": true,
+  "split_date": "2020-01-01"
+}
 ```
 
 Audit and build features:
@@ -294,7 +328,10 @@ without checking the corporate-action treatment.
 
 This is intentionally a research skeleton rather than a production trading
 engine. It does not include order-book simulation, borrow fees, exchange
-calendars, corporate-action adjustment, portfolio constraints, or live trading.
+calendars, corporate-action adjustment, full optimizer-based portfolio
+constraints, or live trading. The reference engine now supports a basic
+per-name weight cap; production deployment still requires a richer execution
+and risk model.
 The synthetic dataset is only a plumbing check and should not be interpreted as
 evidence of a profitable strategy.
 

@@ -14,11 +14,12 @@ from .ai.research_assistant import client_from_environment
 from .akshare_data import fetch_sse_panel, resolve_window
 from .backtest import run_vectorbt, target_weights_from_scores
 from .data import generate_demo_panel, load_panel
+from .experiment import load_experiment_spec, run_experiment
 from .features import build_features
 from .models import ModelConfig, walk_forward_alpha, write_model_plots
 from .quality import QualityConfig, audit_panel, write_quality_artifacts
 from .report import write_artifacts
-from .research import BacktestConfig, run_research
+from .research import BacktestConfig, cost_sensitivity, run_research
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -56,6 +57,10 @@ def _parser() -> argparse.ArgumentParser:
     analyze.add_argument("--quantile", type=float, default=0.2)
     analyze.add_argument("--cost-bps", type=float, default=5.0)
     analyze.add_argument("--min-assets", type=int, default=10)
+    analyze.add_argument(
+        "--max-position-weight", type=float,
+        help="optional per-name absolute weight cap (for example 0.05)",
+    )
     analyze.add_argument("--sector-neutral", action="store_true")
     analyze.add_argument(
         "--split-date", help="optional YYYY-MM-DD boundary for before/after metrics"
@@ -174,6 +179,7 @@ def _parser() -> argparse.ArgumentParser:
     model_backtest.add_argument("--quantile", type=float, default=0.2)
     model_backtest.add_argument("--cost-bps", type=float, default=5.0)
     model_backtest.add_argument("--min-assets", type=int, default=20)
+    model_backtest.add_argument("--max-position-weight", type=float)
     model_backtest.add_argument("--start-date")
     model_backtest.add_argument("--end-date")
     model_backtest.add_argument(
@@ -181,6 +187,24 @@ def _parser() -> argparse.ArgumentParser:
     )
     model_backtest.add_argument("--fees", type=float, default=0.001)
     model_backtest.add_argument("--slippage", type=float, default=0.0005)
+
+    experiment = sub.add_parser(
+        "experiment", help="run a reproducible JSON-configured research study"
+    )
+    experiment.add_argument("--config", type=Path, required=True)
+
+    sensitivity = sub.add_parser(
+        "cost-sensitivity", help="compare performance across transaction-cost assumptions"
+    )
+    sensitivity.add_argument("--input", type=Path, required=True)
+    sensitivity.add_argument("--output", type=Path, default=Path("cost_sensitivity.csv"))
+    sensitivity.add_argument("--costs-bps", default="0,5,10,25,50")
+    sensitivity.add_argument("--factor", choices=["momentum", "reversal", "low_volatility", "column"], default="momentum")
+    sensitivity.add_argument("--column", dest="raw_column")
+    sensitivity.add_argument("--lookback", type=int, default=20)
+    sensitivity.add_argument("--quantile", type=float, default=0.2)
+    sensitivity.add_argument("--min-assets", type=int, default=10)
+    sensitivity.add_argument("--max-position-weight", type=float)
 
     ai = sub.add_parser("ai", help="use DeepSeek for a human-reviewed factor proposal")
     ai_sub = ai.add_subparsers(dest="ai_command", required=True)
@@ -227,6 +251,29 @@ def main(argv: list[str] | None = None) -> int:
             )
             panel.to_csv(args.output, index=False)
             print(f"Wrote {len(panel):,} rows to {args.output}")
+            return 0
+        if args.command == "experiment":
+            spec = load_experiment_spec(args.config)
+            result = run_experiment(spec)
+            print(f"Wrote experiment artifacts to {spec.output}")
+            print(f"Net total return: {result.metrics.get('total_return')}")
+            return 0
+        if args.command == "cost-sensitivity":
+            panel = load_panel(args.input)
+            costs = tuple(float(value.strip()) for value in args.costs_bps.split(",") if value.strip())
+            output = cost_sensitivity(
+                panel,
+                costs_bps=costs,
+                factor=args.factor,
+                lookback=args.lookback,
+                raw_column=args.raw_column,
+                quantile=args.quantile,
+                min_assets=args.min_assets,
+                max_position_weight=args.max_position_weight,
+            )
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            output.to_csv(args.output, index=False)
+            print(f"Wrote cost sensitivity to {args.output}")
             return 0
         if args.command == "quality":
             panel = load_panel(args.input)
@@ -335,6 +382,7 @@ def main(argv: list[str] | None = None) -> int:
                     quality_result.cleaned,
                     quantile=args.quantile,
                     min_assets=args.min_assets,
+                    max_position_weight=args.max_position_weight,
                 )
                 vector_result = run_vectorbt(
                     prices,
@@ -356,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
                         quantile=args.quantile,
                         cost_bps=args.cost_bps,
                         min_assets=args.min_assets,
+                        max_position_weight=args.max_position_weight,
                     ),
                     analysis_start=args.start_date,
                     analysis_end=args.end_date,
@@ -413,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
                     quantile=args.quantile,
                     cost_bps=args.cost_bps,
                     min_assets=args.min_assets,
+                    max_position_weight=args.max_position_weight,
                 ),
                 split_date=args.split_date,
                 analysis_start=args.start_date,

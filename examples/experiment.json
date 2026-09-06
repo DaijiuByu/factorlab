@@ -1,0 +1,12 @@
+{
+  "input": "demo_panel.csv",
+  "output": "artifacts",
+  "factor": "momentum",
+  "lookback": 20,
+  "quantile": 0.2,
+  "cost_bps": 5.0,
+  "min_assets": 20,
+  "max_position_weight": 0.15,
+  "sector_neutral": true,
+  "split_date": "2020-01-01"
+}

@@ -11,6 +11,33 @@ from .data import validate_panel
 METRIC_COLUMNS = ("momentum", "reversal", "volatility", "turnover_pct")
 
 
+def bootstrap_mean_ci(
+    values: pd.Series | np.ndarray,
+    *,
+    confidence: float = 0.95,
+    n_bootstrap: int = 2_000,
+    seed: int = 7,
+) -> tuple[float, float] | None:
+    """Return a reproducible percentile-bootstrap CI for a sample mean.
+
+    The interval is descriptive rather than a replacement for a full
+    block-bootstrap time-series analysis. It is useful for reporting an
+    uncertainty band alongside IC and return estimates.
+    """
+
+    if not 0 < confidence < 1:
+        raise ValueError("confidence must be between 0 and 1")
+    if n_bootstrap < 100:
+        raise ValueError("n_bootstrap must be at least 100")
+    sample = pd.to_numeric(pd.Series(values), errors="coerce").dropna().to_numpy(dtype=float)
+    if len(sample) < 2:
+        return None
+    rng = np.random.default_rng(seed)
+    draws = rng.choice(sample, size=(n_bootstrap, len(sample)), replace=True).mean(axis=1)
+    alpha = (1.0 - confidence) / 2.0
+    return float(np.quantile(draws, alpha)), float(np.quantile(draws, 1.0 - alpha))
+
+
 def newey_west_tstat(values: pd.Series, *, lags: int | None = None) -> float | None:
     """Return a HAC/Newey-West t-statistic for a time series.
 

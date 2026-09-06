@@ -13,6 +13,7 @@ from .metrics import (
     compute_asset_metrics,
     compute_metric_summary,
     factor_quantile_returns,
+    bootstrap_mean_ci,
     newey_west_tstat,
 )
 from .provenance import build_run_manifest
@@ -24,6 +25,7 @@ class BacktestConfig:
     quantile: float = 0.2
     cost_bps: float = 5.0
     min_assets: int = 10
+    max_position_weight: float | None = None
 
     def __post_init__(self) -> None:
         if not 0.01 <= self.quantile <= 0.49:
@@ -32,6 +34,8 @@ class BacktestConfig:
             raise ValueError("cost_bps must be non-negative")
         if self.min_assets < 2:
             raise ValueError("min_assets must be at least 2")
+        if self.max_position_weight is not None and not 0 < self.max_position_weight <= 0.5:
+            raise ValueError("max_position_weight must be between 0 and 0.5")
 
 
 @dataclass
@@ -99,7 +103,9 @@ def _metrics(
             "annualized_return": None,
             "annualized_volatility": None,
             "sharpe": None,
+            "sortino": None,
             "max_drawdown": None,
+            "calmar": None,
             "hit_rate": None,
             "average_turnover": None,
         }
@@ -108,14 +114,19 @@ def _metrics(
     annualized_vol = (
         float(values.std(ddof=1) * np.sqrt(252)) if len(values) > 1 else 0.0
     )
+    downside = values.where(values < 0.0, 0.0)
+    downside_vol = float(downside.pow(2).mean() ** 0.5 * np.sqrt(252))
     annualized_return = float(equity.iloc[-1] ** (252 / len(values)) - 1.0)
+    max_drawdown = float(drawdown.min())
     return {
         "observations": int(len(values)),
         "total_return": float(equity.iloc[-1] - 1.0),
         "annualized_return": annualized_return,
         "annualized_volatility": annualized_vol,
         "sharpe": float(annualized_return / annualized_vol) if annualized_vol else None,
-        "max_drawdown": float(drawdown.min()),
+        "sortino": float(annualized_return / downside_vol) if downside_vol else None,
+        "max_drawdown": max_drawdown,
+        "calmar": float(annualized_return / abs(max_drawdown)) if max_drawdown < 0 else None,
         "hit_rate": float((values > 0).mean()),
         "average_turnover": float(turnover.loc[values.index].mean())
         if turnover is not None
@@ -140,11 +151,15 @@ def _portfolio(
         ranked = group.sort_values(["score", "ticker"], kind="stable")
         short_names = set(ranked.head(side_count)["ticker"])
         long_names = set(ranked.tail(side_count)["ticker"])
-        long_weight = 0.5 / len(long_names)
-        short_weight = -0.5 / len(short_names)
+        long_weights = _capped_side_weights(
+            sorted(long_names), 0.5, config.max_position_weight
+        )
+        short_weights = _capped_side_weights(
+            sorted(short_names), -0.5, config.max_position_weight
+        )
         current = {
-            ticker: (long_weight if ticker in long_names else short_weight)
-            for ticker in long_names | short_names
+            **long_weights,
+            **short_weights,
         }
         names = set(previous) | set(current)
         turnover = 0.5 * sum(
@@ -173,6 +188,40 @@ def _portfolio(
     return pd.DataFrame(daily_rows), pd.DataFrame(weight_rows)
 
 
+def _capped_side_weights(
+    names: list[str], gross: float, cap: float | None
+) -> dict[str, float]:
+    """Allocate one side of a portfolio with an optional per-name cap.
+
+    The deterministic water-filling allocation keeps the side fully invested
+    whenever the requested cap is feasible (``cap * len(names) >= abs(gross)``).
+    """
+
+    if not names:
+        return {}
+    magnitude = abs(gross)
+    if cap is None:
+        weight = gross / len(names)
+        return {name: weight for name in names}
+    if cap * len(names) + 1e-12 < magnitude:
+        raise ValueError(
+            "max_position_weight is too small for the selected quantile portfolio"
+        )
+    remaining = magnitude
+    active = list(names)
+    weights: dict[str, float] = {}
+    while active:
+        proposed = remaining / len(active)
+        if proposed <= cap + 1e-12:
+            signed = np.sign(gross) * proposed
+            weights.update({name: float(signed) for name in active})
+            break
+        name = active.pop(0)
+        weights[name] = float(np.sign(gross) * cap)
+        remaining -= cap
+    return weights
+
+
 def _split_metrics(
     daily: pd.DataFrame, split_date: str | None
 ) -> dict[str, dict[str, float | int | None]]:
@@ -180,9 +229,66 @@ def _split_metrics(
         return {}
     boundary = pd.Timestamp(split_date)
     return {
-        "before_split": _metrics(daily.loc[daily["date"] < boundary, "net_return"]),
-        "after_split": _metrics(daily.loc[daily["date"] >= boundary, "net_return"]),
+        "before_split": _metrics(
+            daily.loc[daily["date"] < boundary, "net_return"],
+            daily.loc[daily["date"] < boundary, "turnover"],
+        ),
+        "after_split": _metrics(
+            daily.loc[daily["date"] >= boundary, "net_return"],
+            daily.loc[daily["date"] >= boundary, "turnover"],
+        ),
     }
+
+
+def cost_sensitivity(
+    panel: pd.DataFrame,
+    *,
+    costs_bps: tuple[float, ...] = (0.0, 5.0, 10.0, 25.0, 50.0),
+    factor: str = "momentum",
+    lookback: int = 20,
+    raw_column: str | None = None,
+    direction: float = 1.0,
+    sector_neutral: bool = False,
+    quantile: float = 0.2,
+    min_assets: int = 10,
+    max_position_weight: float | None = None,
+) -> pd.DataFrame:
+    """Measure how explicit transaction-cost assumptions change results.
+
+    This helper intentionally reuses the reference engine for each scenario,
+    making the comparison directly attributable to the cost assumption.
+    """
+
+    if not costs_bps:
+        raise ValueError("costs_bps must not be empty")
+    rows: list[dict[str, float | int | None]] = []
+    for cost in costs_bps:
+        if cost < 0 or not np.isfinite(cost):
+            raise ValueError("costs_bps must contain finite non-negative values")
+        result = run_research(
+            panel,
+            factor=factor,
+            lookback=lookback,
+            raw_column=raw_column,
+            direction=direction,
+            sector_neutral=sector_neutral,
+            backtest=BacktestConfig(
+                quantile=quantile,
+                cost_bps=float(cost),
+                min_assets=min_assets,
+                max_position_weight=max_position_weight,
+            ),
+        )
+        rows.append(
+            {
+                "cost_bps": float(cost),
+                "total_return": result.metrics["total_return"],
+                "annualized_return": result.metrics["annualized_return"],
+                "sharpe": result.metrics["sharpe"],
+                "average_turnover": result.metrics["average_turnover"],
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def run_research(
@@ -261,6 +367,9 @@ def run_research(
                 "ic_tstat_newey_west": newey_west_tstat(ic_by_date["ic"]),
             }
         )
+        ic_ci = bootstrap_mean_ci(ic_by_date["ic"])
+        metrics["mean_ic_ci_low"] = ic_ci[0] if ic_ci else None
+        metrics["mean_ic_ci_high"] = ic_ci[1] if ic_ci else None
     else:
         metrics.update(
             {
@@ -269,6 +378,8 @@ def run_research(
                 "ic_positive_ratio": None,
                 "ic_observations": 0,
                 "ic_tstat_newey_west": None,
+                "mean_ic_ci_low": None,
+                "mean_ic_ci_high": None,
             }
         )
     quantile_returns = factor_quantile_returns(evaluation, quantiles=5)
@@ -281,6 +392,7 @@ def run_research(
         "quantile": config.quantile,
         "cost_bps": config.cost_bps,
         "min_assets": config.min_assets,
+        "max_position_weight": config.max_position_weight,
         "split_date": split_date,
         "analysis_start": analysis_start,
         "analysis_end": analysis_end,
