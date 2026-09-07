@@ -16,6 +16,7 @@
   "portfolio_notional": 1000000.0,
   "impact_exponent": 0.5,
   "adv_window": 20,
+  "optimizer_risk_aversion": 0.0,
   "research_trials": 3,
   "data_version": "demo-v1",
   "sector_neutral": true,

@@ -39,6 +39,7 @@ class ExperimentSpec:
     portfolio_notional: float = 1_000_000.0
     impact_exponent: float = 0.5
     adv_window: int = 20
+    optimizer_risk_aversion: float = 0.0
     data_version: str | None = None
     sector_neutral: bool = False
     split_date: str | None = None
@@ -73,6 +74,7 @@ class ExperimentSpec:
             portfolio_notional=spec.portfolio_notional,
             impact_exponent=spec.impact_exponent,
             adv_window=spec.adv_window,
+            optimizer_risk_aversion=spec.optimizer_risk_aversion,
         )
         if spec.lookback < 2:
             raise ValueError("lookback must be at least 2")
@@ -129,6 +131,7 @@ def run_experiment(spec: ExperimentSpec) -> ResearchResult:
             portfolio_notional=spec.portfolio_notional,
             impact_exponent=spec.impact_exponent,
             adv_window=spec.adv_window,
+            optimizer_risk_aversion=spec.optimizer_risk_aversion,
         ),
         split_date=spec.split_date,
         analysis_start=spec.start_date,

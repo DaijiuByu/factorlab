@@ -73,6 +73,7 @@ def _parser() -> argparse.ArgumentParser:
     analyze.add_argument("--portfolio-notional", type=float, default=1_000_000.0)
     analyze.add_argument("--impact-exponent", type=float, default=0.5)
     analyze.add_argument("--adv-window", type=int, default=20)
+    analyze.add_argument("--optimizer-risk-aversion", type=float, default=0.0)
     analyze.add_argument("--sector-neutral", action="store_true")
     analyze.add_argument(
         "--split-date", help="optional YYYY-MM-DD boundary for before/after metrics"
@@ -112,6 +113,7 @@ def _parser() -> argparse.ArgumentParser:
     live.add_argument("--portfolio-notional", type=float, default=1_000_000.0)
     live.add_argument("--impact-exponent", type=float, default=0.5)
     live.add_argument("--adv-window", type=int, default=20)
+    live.add_argument("--optimizer-risk-aversion", type=float, default=0.0)
     live.add_argument("--sector-neutral", action="store_true")
     live.add_argument(
         "--split-date", help="optional YYYY-MM-DD boundary for before/after metrics"
@@ -212,6 +214,7 @@ def _parser() -> argparse.ArgumentParser:
     model_backtest.add_argument("--portfolio-notional", type=float, default=1_000_000.0)
     model_backtest.add_argument("--impact-exponent", type=float, default=0.5)
     model_backtest.add_argument("--adv-window", type=int, default=20)
+    model_backtest.add_argument("--optimizer-risk-aversion", type=float, default=0.0)
     model_backtest.add_argument("--start-date")
     model_backtest.add_argument("--end-date")
     model_backtest.add_argument(
@@ -246,6 +249,7 @@ def _parser() -> argparse.ArgumentParser:
     sensitivity.add_argument("--portfolio-notional", type=float, default=1_000_000.0)
     sensitivity.add_argument("--impact-exponent", type=float, default=0.5)
     sensitivity.add_argument("--adv-window", type=int, default=20)
+    sensitivity.add_argument("--optimizer-risk-aversion", type=float, default=0.0)
 
     benchmark = sub.add_parser(
         "compare-variants", help="compare raw and sector-neutral factor variants"
@@ -340,6 +344,7 @@ def main(argv: list[str] | None = None) -> int:
                 portfolio_notional=args.portfolio_notional,
                 impact_exponent=args.impact_exponent,
                 adv_window=args.adv_window,
+                optimizer_risk_aversion=args.optimizer_risk_aversion,
             )
             args.output.parent.mkdir(parents=True, exist_ok=True)
             output.to_csv(args.output, index=False)
@@ -498,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
                         portfolio_notional=args.portfolio_notional,
                         impact_exponent=args.impact_exponent,
                         adv_window=args.adv_window,
+                        optimizer_risk_aversion=args.optimizer_risk_aversion,
                     ),
                     analysis_start=args.start_date,
                     analysis_end=args.end_date,
@@ -583,6 +589,7 @@ def main(argv: list[str] | None = None) -> int:
                     portfolio_notional=args.portfolio_notional,
                     impact_exponent=args.impact_exponent,
                     adv_window=args.adv_window,
+                    optimizer_risk_aversion=args.optimizer_risk_aversion,
                 ),
                 split_date=args.split_date,
                 analysis_start=args.start_date,
@@ -631,6 +638,7 @@ def main(argv: list[str] | None = None) -> int:
                     portfolio_notional=args.portfolio_notional,
                     impact_exponent=args.impact_exponent,
                     adv_window=args.adv_window,
+                    optimizer_risk_aversion=args.optimizer_risk_aversion,
                 ),
                 split_date=args.split_date,
                 analysis_start=selected_start.strftime("%Y-%m-%d"),

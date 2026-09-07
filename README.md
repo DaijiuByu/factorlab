@@ -27,6 +27,8 @@ Given a CSV with one row per `date` and `ticker`, FactorLab can:
 - model commissions, spread, slippage, market impact, ADV participation, and
   short borrow costs;
 - enforce an optional per-name position cap while preserving long/short exposure;
+- optionally project selected alpha scores through a transparent risk-aversion
+  optimizer before applying exposure, cap, and turnover constraints;
 - compare net performance across a transaction-cost sensitivity grid;
 - report annualized return, volatility, Sharpe, Sortino, Calmar, drawdown, hit rate, and turnover;
 - write CSV/JSON/Markdown outputs and an equity curve PNG.
@@ -143,6 +145,9 @@ factorlab analyze --input demo_panel.csv --output artifacts \
   --portfolio-notional 1000000 --adv-window 20 --impact-exponent 0.5
 ```
 
+Set `--optimizer-risk-aversion` above zero to activate the deterministic score
+projection; the value is recorded in `metrics.json` and `run_manifest.json`.
+
 Example `experiment.json` (commit this file with a study so reviewers can
 reproduce the exact settings):
 
@@ -165,6 +170,7 @@ reproduce the exact settings):
   "portfolio_notional": 1000000,
   "impact_exponent": 0.5,
   "adv_window": 20,
+  "optimizer_risk_aversion": 0.0,
   "research_trials": 3,
   "data_version": "demo-v1",
   "sector_neutral": true,

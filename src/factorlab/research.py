@@ -19,7 +19,7 @@ from .metrics import (
     newey_west_tstat,
 )
 from .provenance import build_run_manifest
-from .risk import RiskConfig, enforce_weight_limits
+from .risk import RiskConfig, enforce_weight_limits, optimize_scores
 from .stats import benjamini_hochberg, block_bootstrap_mean_ci, deflated_sharpe_ratio
 from .signals import column_factor, low_volatility, momentum, reversal
 
@@ -40,6 +40,7 @@ class BacktestConfig:
     portfolio_notional: float = 1_000_000.0
     impact_exponent: float = 0.5
     adv_window: int = 20
+    optimizer_risk_aversion: float = 0.0
 
     def __post_init__(self) -> None:
         if not 0.01 <= self.quantile <= 0.49:
@@ -66,6 +67,8 @@ class BacktestConfig:
             raise ValueError("portfolio_notional must be finite and positive")
         if not isinstance(self.adv_window, int) or self.adv_window < 1:
             raise ValueError("adv_window must be a positive integer")
+        if not np.isfinite(self.optimizer_risk_aversion) or self.optimizer_risk_aversion < 0:
+            raise ValueError("optimizer_risk_aversion must be finite and non-negative")
 
     @property
     def cost_model(self) -> TransactionCostModel:
@@ -240,6 +243,16 @@ def _portfolio(
             **long_weights,
             **short_weights,
         }
+        if config.optimizer_risk_aversion > 0:
+            selected = group[group["ticker"].isin(current)].set_index("ticker")["score"]
+            optimized = optimize_scores(
+                selected,
+                max_weight=config.max_position_weight or 0.5,
+                gross_exposure=1.0,
+                net_exposure=0.0,
+                risk_aversion=config.optimizer_risk_aversion,
+            )
+            current = optimized.to_dict()
         current = enforce_weight_limits(
             current,
             config=RiskConfig(
@@ -381,6 +394,7 @@ def cost_sensitivity(
     portfolio_notional: float = 1_000_000.0,
     impact_exponent: float = 0.5,
     adv_window: int = 20,
+    optimizer_risk_aversion: float = 0.0,
 ) -> pd.DataFrame:
     """Measure how explicit transaction-cost assumptions change results.
 
@@ -415,6 +429,7 @@ def cost_sensitivity(
                 portfolio_notional=portfolio_notional,
                 impact_exponent=impact_exponent,
                 adv_window=adv_window,
+                optimizer_risk_aversion=optimizer_risk_aversion,
             ),
         )
         rows.append(
@@ -558,6 +573,7 @@ def run_research(
         "portfolio_notional": config.portfolio_notional,
         "impact_exponent": config.impact_exponent,
         "adv_window": config.adv_window,
+        "optimizer_risk_aversion": config.optimizer_risk_aversion,
         "split_date": split_date,
         "analysis_start": analysis_start,
         "analysis_end": analysis_end,
