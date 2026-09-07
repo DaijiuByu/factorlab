@@ -19,6 +19,7 @@ class ModelConfig:
     train_days: int = 252
     test_days: int = 21
     purge_days: int = 1
+    embargo_days: int = 0
     n_jobs: int = 4
     random_state: int = 7
 
@@ -27,6 +28,8 @@ class ModelConfig:
             raise ValueError("horizon, train_days, and test_days must be positive")
         if self.purge_days < self.horizon:
             raise ValueError("purge_days must be at least horizon")
+        if self.embargo_days < 0:
+            raise ValueError("embargo_days must be non-negative")
         if self.n_jobs == 0:
             raise ValueError("n_jobs must not be zero")
 
@@ -204,7 +207,9 @@ def walk_forward_alpha(
     if len(dates) <= cfg.train_days:
         raise ValueError("not enough dates for the configured train_days")
     for test_start in range(cfg.train_days, len(dates), cfg.test_days):
-        train_end = test_start - cfg.purge_days
+        train_end = test_start - cfg.purge_days - cfg.embargo_days
+        if train_end <= 0:
+            continue
         train_dates = dates[max(0, train_end - cfg.train_days) : train_end]
         test_dates = dates[test_start : test_start + cfg.test_days]
         train = usable.loc[usable["date"].isin(train_dates)]
@@ -290,7 +295,8 @@ def walk_forward_alpha(
             "horizon": cfg.horizon,
             "train_days": cfg.train_days,
             "test_days": cfg.test_days,
-            "purge_days": cfg.purge_days,
+                "purge_days": cfg.purge_days,
+                "embargo_days": cfg.embargo_days,
             "n_jobs": cfg.n_jobs,
         },
     )

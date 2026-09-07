@@ -29,6 +29,17 @@ class ExperimentSpec:
     cost_bps: float = 5.0
     min_assets: int = 10
     max_position_weight: float | None = None
+    max_turnover: float | None = None
+    commission_bps: float = 0.0
+    spread_bps: float = 0.0
+    slippage_bps: float = 0.0
+    impact_bps: float = 0.0
+    borrow_bps_annual: float = 0.0
+    research_trials: int = 1
+    portfolio_notional: float = 1_000_000.0
+    impact_exponent: float = 0.5
+    adv_window: int = 20
+    data_version: str | None = None
     sector_neutral: bool = False
     split_date: str | None = None
     start_date: str | None = None
@@ -52,6 +63,16 @@ class ExperimentSpec:
             cost_bps=spec.cost_bps,
             min_assets=spec.min_assets,
             max_position_weight=spec.max_position_weight,
+            max_turnover=spec.max_turnover,
+            commission_bps=spec.commission_bps,
+            spread_bps=spec.spread_bps,
+            slippage_bps=spec.slippage_bps,
+            impact_bps=spec.impact_bps,
+            borrow_bps_annual=spec.borrow_bps_annual,
+            research_trials=spec.research_trials,
+            portfolio_notional=spec.portfolio_notional,
+            impact_exponent=spec.impact_exponent,
+            adv_window=spec.adv_window,
         )
         if spec.lookback < 2:
             raise ValueError("lookback must be at least 2")
@@ -98,10 +119,21 @@ def run_experiment(spec: ExperimentSpec) -> ResearchResult:
             cost_bps=spec.cost_bps,
             min_assets=spec.min_assets,
             max_position_weight=spec.max_position_weight,
+            max_turnover=spec.max_turnover,
+            commission_bps=spec.commission_bps,
+            spread_bps=spec.spread_bps,
+            slippage_bps=spec.slippage_bps,
+            impact_bps=spec.impact_bps,
+            borrow_bps_annual=spec.borrow_bps_annual,
+            research_trials=spec.research_trials,
+            portfolio_notional=spec.portfolio_notional,
+            impact_exponent=spec.impact_exponent,
+            adv_window=spec.adv_window,
         ),
         split_date=spec.split_date,
         analysis_start=spec.start_date,
         analysis_end=spec.end_date,
+        data_metadata={"data_version": spec.data_version} if spec.data_version else None,
     )
     write_artifacts(result, output, source=spec.input)
     return result

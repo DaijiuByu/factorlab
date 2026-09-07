@@ -49,3 +49,14 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(len(model.predict_std(x)), 5)
         self.assertEqual(len(model.coefficient_positive_probability()), 4)
         self.assertTrue(np.isfinite(model.predict_confidence_adjusted(x)).all())
+
+    def test_embargo_widens_train_test_gap(self):
+        result = walk_forward_alpha(
+            self.features,
+            ["momentum_5d"],
+            config=ModelConfig(
+                model="ridge", train_days=40, test_days=10, purge_days=1, embargo_days=3
+            ),
+        )
+        gaps = result.folds["test_start"] - result.folds["train_end"]
+        self.assertTrue((gaps.dt.days >= 4).all())

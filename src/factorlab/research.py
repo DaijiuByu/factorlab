@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from .data import validate_panel
+from .costs import TransactionCostModel
 from .metrics import (
     compute_asset_metrics,
     compute_metric_summary,
@@ -17,6 +19,8 @@ from .metrics import (
     newey_west_tstat,
 )
 from .provenance import build_run_manifest
+from .risk import RiskConfig, enforce_weight_limits
+from .stats import benjamini_hochberg, block_bootstrap_mean_ci, deflated_sharpe_ratio
 from .signals import column_factor, low_volatility, momentum, reversal
 
 
@@ -26,6 +30,16 @@ class BacktestConfig:
     cost_bps: float = 5.0
     min_assets: int = 10
     max_position_weight: float | None = None
+    max_turnover: float | None = None
+    commission_bps: float = 0.0
+    spread_bps: float = 0.0
+    slippage_bps: float = 0.0
+    impact_bps: float = 0.0
+    borrow_bps_annual: float = 0.0
+    research_trials: int = 1
+    portfolio_notional: float = 1_000_000.0
+    impact_exponent: float = 0.5
+    adv_window: int = 20
 
     def __post_init__(self) -> None:
         if not 0.01 <= self.quantile <= 0.49:
@@ -36,6 +50,37 @@ class BacktestConfig:
             raise ValueError("min_assets must be at least 2")
         if self.max_position_weight is not None and not 0 < self.max_position_weight <= 0.5:
             raise ValueError("max_position_weight must be between 0 and 0.5")
+        if self.max_turnover is not None and self.max_turnover < 0:
+            raise ValueError("max_turnover must be non-negative")
+        TransactionCostModel(
+            commission_bps=self.commission_bps,
+            spread_bps=self.spread_bps,
+            slippage_bps=self.slippage_bps,
+            impact_bps=self.impact_bps,
+            borrow_bps_annual=self.borrow_bps_annual,
+            impact_exponent=self.impact_exponent,
+        )
+        if self.research_trials < 1:
+            raise ValueError("research_trials must be positive")
+        if not np.isfinite(self.portfolio_notional) or self.portfolio_notional <= 0:
+            raise ValueError("portfolio_notional must be finite and positive")
+        if not isinstance(self.adv_window, int) or self.adv_window < 1:
+            raise ValueError("adv_window must be a positive integer")
+
+    @property
+    def cost_model(self) -> TransactionCostModel:
+        return TransactionCostModel(
+            commission_bps=self.commission_bps,
+            spread_bps=self.spread_bps,
+            slippage_bps=self.slippage_bps,
+            impact_bps=self.impact_bps,
+            borrow_bps_annual=self.borrow_bps_annual,
+            impact_exponent=self.impact_exponent,
+        )
+
+    @property
+    def effective_cost_bps(self) -> float:
+        return self.cost_bps + self.cost_model.fixed_bps
 
 
 @dataclass
@@ -87,9 +132,22 @@ def information_coefficient(scored: pd.DataFrame, min_assets: int) -> pd.DataFra
                 "date": date,
                 "ic": _spearman(group["score"], group["forward_return"]),
                 "n_assets": len(group),
+                "p_value": _correlation_p_value(
+                    _spearman(group["score"], group["forward_return"]), len(group)
+                ),
             }
         )
-    return pd.DataFrame(rows, columns=["date", "ic", "n_assets"])
+    return pd.DataFrame(rows, columns=["date", "ic", "n_assets", "p_value"])
+
+
+def _correlation_p_value(correlation: float, observations: int) -> float | None:
+    """Approximate two-sided p-value for a rank correlation."""
+
+    if observations < 3 or not np.isfinite(correlation) or abs(correlation) >= 1:
+        return 0.0 if abs(correlation) >= 1 else None
+    statistic = abs(correlation) * np.sqrt((observations - 2) / max(1e-12, 1 - correlation**2))
+    # Normal-tail approximation is deterministic and dependency-free.
+    return float(math.erfc(statistic / np.sqrt(2.0)))
 
 
 def _metrics(
@@ -137,7 +195,28 @@ def _metrics(
 def _portfolio(
     scored: pd.DataFrame, config: BacktestConfig
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    usable = scored.dropna(subset=["score", "forward_return"])
+    usable = scored.dropna(subset=["score", "forward_return"]).copy()
+    # ADV is optional. When available, use a trailing mean of traded notional
+    # to convert each weight change into a participation rate. This keeps the
+    # impact model explicit while preserving a deterministic fallback for CSVs
+    # that only contain date/ticker/close.
+    adv_source = None
+    if "amount" in usable.columns:
+        adv_source = pd.to_numeric(usable["amount"], errors="coerce")
+    elif "volume" in usable.columns:
+        adv_source = pd.to_numeric(usable["volume"], errors="coerce") * pd.to_numeric(
+            usable["close"], errors="coerce"
+        )
+    if adv_source is not None:
+        usable["_adv_notional"] = (
+            adv_source.where(np.isfinite(adv_source) & (adv_source > 0))
+            .groupby(usable["ticker"])
+            .transform(
+                lambda series: series.rolling(
+                    config.adv_window, min_periods=1
+                ).mean()
+            )
+        )
     daily_rows: list[dict[str, object]] = []
     weight_rows: list[dict[str, object]] = []
     previous: dict[str, float] = {}
@@ -161,6 +240,16 @@ def _portfolio(
             **long_weights,
             **short_weights,
         }
+        current = enforce_weight_limits(
+            current,
+            config=RiskConfig(
+                max_position_weight=config.max_position_weight,
+                max_gross_exposure=1.0,
+                max_net_exposure=0.0,
+                max_turnover=config.max_turnover,
+            ),
+            previous=previous,
+        )
         names = set(previous) | set(current)
         turnover = 0.5 * sum(
             abs(current.get(name, 0.0) - previous.get(name, 0.0)) for name in names
@@ -171,12 +260,43 @@ def _portfolio(
             for ticker in current
             if ticker in returns
         )
-        net = gross - turnover * config.cost_bps / 10_000.0
+        # ``cost_bps`` is the legacy all-in flat assumption. The explicit
+        # TransactionCostModel is applied per name so market impact can scale
+        # with ADV participation when the panel provides amount/volume data.
+        notional = config.portfolio_notional
+        adv = (
+            group.set_index("ticker")["_adv_notional"]
+            if "_adv_notional" in group
+            else pd.Series(dtype=float)
+        )
+        model_cost = 0.0
+        for name in names:
+            change = abs(current.get(name, 0.0) - previous.get(name, 0.0))
+            if change == 0.0:
+                continue
+            adv_value = adv.get(name)
+            model_cost += config.cost_model.estimate(
+                change * notional,
+                adv=float(adv_value) if adv_value is not None and np.isfinite(adv_value) else None,
+            )
+        model_cost_return = model_cost / notional
+        legacy_cost_return = turnover * config.cost_bps / 10_000.0
+        short_notional = sum(-weight for weight in current.values() if weight < 0)
+        borrow_cost = config.cost_model.estimate(
+            0.0,
+            short_notional=short_notional * notional,
+            holding_days=1.0,
+        )
+        borrow_cost_return = borrow_cost / notional
+        net = gross - legacy_cost_return - model_cost_return - borrow_cost_return
         daily_rows.append(
             {
                 "date": date,
                 "gross_return": gross,
                 "turnover": turnover,
+                "legacy_cost": legacy_cost_return,
+                "transaction_cost": model_cost_return,
+                "borrow_cost": borrow_cost_return,
                 "net_return": net,
             }
         )
@@ -252,6 +372,15 @@ def cost_sensitivity(
     quantile: float = 0.2,
     min_assets: int = 10,
     max_position_weight: float | None = None,
+    max_turnover: float | None = None,
+    commission_bps: float = 0.0,
+    spread_bps: float = 0.0,
+    slippage_bps: float = 0.0,
+    impact_bps: float = 0.0,
+    borrow_bps_annual: float = 0.0,
+    portfolio_notional: float = 1_000_000.0,
+    impact_exponent: float = 0.5,
+    adv_window: int = 20,
 ) -> pd.DataFrame:
     """Measure how explicit transaction-cost assumptions change results.
 
@@ -277,6 +406,15 @@ def cost_sensitivity(
                 cost_bps=float(cost),
                 min_assets=min_assets,
                 max_position_weight=max_position_weight,
+                max_turnover=max_turnover,
+                commission_bps=commission_bps,
+                spread_bps=spread_bps,
+                slippage_bps=slippage_bps,
+                impact_bps=impact_bps,
+                borrow_bps_annual=borrow_bps_annual,
+                portfolio_notional=portfolio_notional,
+                impact_exponent=impact_exponent,
+                adv_window=adv_window,
             ),
         )
         rows.append(
@@ -337,6 +475,10 @@ def run_research(
     if analysis_end is not None:
         evaluation = evaluation.loc[evaluation["date"] <= pd.Timestamp(analysis_end)]
     ic_by_date = information_coefficient(evaluation, config.min_assets)
+    if not ic_by_date.empty and "p_value" in ic_by_date:
+        corrected = benjamini_hochberg(ic_by_date["p_value"])
+        ic_by_date["q_value"] = corrected["q_value"].to_numpy()
+        ic_by_date["q_value_reject_05"] = corrected["reject"].to_numpy()
     daily, weights = _portfolio(evaluation, config)
     asset_metrics = compute_asset_metrics(
         panel,
@@ -370,6 +512,9 @@ def run_research(
         ic_ci = bootstrap_mean_ci(ic_by_date["ic"])
         metrics["mean_ic_ci_low"] = ic_ci[0] if ic_ci else None
         metrics["mean_ic_ci_high"] = ic_ci[1] if ic_ci else None
+        block_ci = block_bootstrap_mean_ci(ic_by_date["ic"], block_size=5)
+        metrics["mean_ic_block_ci_low"] = block_ci[0] if block_ci else None
+        metrics["mean_ic_block_ci_high"] = block_ci[1] if block_ci else None
     else:
         metrics.update(
             {
@@ -380,8 +525,18 @@ def run_research(
                 "ic_tstat_newey_west": None,
                 "mean_ic_ci_low": None,
                 "mean_ic_ci_high": None,
+                "mean_ic_block_ci_low": None,
+                "mean_ic_block_ci_high": None,
             }
         )
+    if metrics.get("sharpe") is not None:
+        metrics["deflated_sharpe_probability"] = deflated_sharpe_ratio(
+            float(metrics["sharpe"]),
+            n_trials=config.research_trials,
+            observations=max(2, int(metrics["observations"])),
+        )
+    else:
+        metrics["deflated_sharpe_probability"] = None
     quantile_returns = factor_quantile_returns(evaluation, quantiles=5)
     run_config = {
         "factor": factor,
@@ -393,6 +548,16 @@ def run_research(
         "cost_bps": config.cost_bps,
         "min_assets": config.min_assets,
         "max_position_weight": config.max_position_weight,
+        "max_turnover": config.max_turnover,
+        "commission_bps": config.commission_bps,
+        "spread_bps": config.spread_bps,
+        "slippage_bps": config.slippage_bps,
+        "impact_bps": config.impact_bps,
+        "borrow_bps_annual": config.borrow_bps_annual,
+        "research_trials": config.research_trials,
+        "portfolio_notional": config.portfolio_notional,
+        "impact_exponent": config.impact_exponent,
+        "adv_window": config.adv_window,
         "split_date": split_date,
         "analysis_start": analysis_start,
         "analysis_end": analysis_end,

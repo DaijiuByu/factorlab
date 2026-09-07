@@ -11,6 +11,50 @@ import pandas as pd
 REQUIRED_COLUMNS = {"date", "ticker", "close"}
 
 
+def validate_point_in_time(
+    panel: pd.DataFrame,
+    *,
+    observation_column: str = "date",
+    release_column: str = "release_date",
+    effective_column: str = "effective_date",
+) -> pd.DataFrame:
+    """Reject observations whose information was unavailable at observation time."""
+
+    clean = validate_panel(panel)
+    observation = pd.to_datetime(clean[observation_column], errors="raise").dt.tz_localize(None)
+    for column, label in ((release_column, "release_date"), (effective_column, "effective_date")):
+        if column not in clean:
+            continue
+        values = pd.to_datetime(clean[column], errors="raise").dt.tz_localize(None)
+        if (values > observation).any():
+            raise ValueError(f"{label} must not be after the observation date")
+    return clean
+
+
+def asof_universe(
+    membership: pd.DataFrame,
+    asof_date: str | pd.Timestamp,
+    *,
+    ticker_column: str = "ticker",
+    effective_column: str = "effective_date",
+    end_column: str = "end_date",
+) -> pd.DataFrame:
+    """Filter historical universe membership using point-in-time intervals."""
+
+    required = {ticker_column, effective_column}
+    missing = required - set(membership.columns)
+    if missing:
+        raise ValueError(f"membership missing columns: {', '.join(sorted(missing))}")
+    point = pd.Timestamp(asof_date)
+    frame = membership.copy()
+    frame[effective_column] = pd.to_datetime(frame[effective_column], errors="raise")
+    active = frame[effective_column] <= point
+    if end_column in frame:
+        frame[end_column] = pd.to_datetime(frame[end_column], errors="raise")
+        active &= frame[end_column].isna() | (frame[end_column] > point)
+    return frame.loc[active].drop_duplicates(ticker_column).reset_index(drop=True)
+
+
 def validate_panel(panel: pd.DataFrame) -> pd.DataFrame:
     """Validate and canonicalize a daily equity panel.
 

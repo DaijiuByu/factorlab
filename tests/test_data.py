@@ -2,7 +2,12 @@ import unittest
 
 import pandas as pd
 
-from factorlab.data import generate_demo_panel, validate_panel
+from factorlab.data import (
+    asof_universe,
+    generate_demo_panel,
+    validate_panel,
+    validate_point_in_time,
+)
 
 
 class DataTests(unittest.TestCase):
@@ -31,3 +36,21 @@ class DataTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             validate_panel(missing_ticker)
+
+    def test_point_in_time_release_date_is_enforced(self):
+        panel = generate_demo_panel(days=30, assets=6, seed=1)
+        panel["release_date"] = panel["date"]
+        panel.loc[0, "release_date"] = panel.loc[0, "date"] + pd.Timedelta(days=1)
+        with self.assertRaises(ValueError):
+            validate_point_in_time(panel)
+
+    def test_asof_universe_respects_effective_interval(self):
+        membership = pd.DataFrame(
+            {
+                "ticker": ["A", "B", "A"],
+                "effective_date": ["2020-01-01", "2020-01-01", "2021-01-01"],
+                "end_date": ["2020-12-31", None, None],
+            }
+        )
+        result = asof_universe(membership, "2020-06-01")
+        self.assertEqual(set(result["ticker"]), {"A", "B"})

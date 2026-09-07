@@ -19,9 +19,13 @@ Given a CSV with one row per `date` and `ticker`, FactorLab can:
 - winsorize and z-score signals within each date;
 - optionally demean signals within date/sector buckets;
 - calculate daily Spearman IC, mean IC, ICIR, and positive-IC ratio;
+- report block-bootstrap IC intervals, Benjamini-Hochberg q-values, and an
+  approximate deflated-Sharpe diagnostic;
 - report a Newey-West/HAC IC t-statistic and daily score-quantile returns;
 - form a dollar-neutral top/bottom quantile portfolio;
 - charge explicit turnover-based transaction costs;
+- model commissions, spread, slippage, market impact, ADV participation, and
+  short borrow costs;
 - enforce an optional per-name position cap while preserving long/short exposure;
 - compare net performance across a transaction-cost sensitivity grid;
 - report annualized return, volatility, Sharpe, Sortino, Calmar, drawdown, hit rate, and turnover;
@@ -49,9 +53,19 @@ CSV / AkShare -> quality audit -> features -> walk-forward Alpha
 - `experiment`: runs a complete quality-audit and research pipeline from one
   versionable JSON specification.
 - `cost-sensitivity`: writes a table showing how fees change return and Sharpe.
+
+Research utilities also include an append-only JSONL factor registry,
+point-in-time release/effective-date validation, and optional CSV/Parquet
+storage helpers. The registry records formula hashes so duplicate hypotheses
+can be detected before a new backtest is counted as an independent trial.
+`compare-variants` produces a raw-versus-sector-neutral ablation table, while
+`factorlab.storage.query_duckdb` offers a read-only `{dataset}` placeholder for
+columnar exploratory queries when DuckDB is installed.
 - `ai propose`: optionally asks DeepSeek for one JSON factor proposal.
 - `ai validate`: validates and evaluates the proposal using a small formula
   grammar with no `eval` or generated code execution.
+- `ai evaluate`: runs a structured proposal evaluation with finite-score,
+  allow-list, and out-of-sample diagnostic checks.
 
 The default models are deliberately CPU-friendly. LightGBM, XGBoost, VectorBT,
 Polars, DuckDB, and PyMC remain optional extras so a basic CSV workflow stays
@@ -117,6 +131,18 @@ factorlab cost-sensitivity --input demo_panel.csv --output costs.csv \
   --costs-bps 0,5,10,25,50
 ```
 
+For a capacity-aware run, pass a notional and explicit cost components. When
+`amount` (or `volume` and `close`) is present, impact uses the trailing ADV
+window and records `legacy_cost`, `transaction_cost`, and `borrow_cost` in
+`daily_returns.csv`:
+
+```bash
+factorlab analyze --input demo_panel.csv --output artifacts \
+  --cost-bps 5 --commission-bps 1 --spread-bps 2 --slippage-bps 1 \
+  --impact-bps 8 --borrow-bps-annual 50 \
+  --portfolio-notional 1000000 --adv-window 20 --impact-exponent 0.5
+```
+
 Example `experiment.json` (commit this file with a study so reviewers can
 reproduce the exact settings):
 
@@ -128,8 +154,19 @@ reproduce the exact settings):
   "lookback": 20,
   "quantile": 0.2,
   "cost_bps": 5,
+  "commission_bps": 1,
+  "spread_bps": 2,
+  "slippage_bps": 1,
+  "impact_bps": 8,
+  "borrow_bps_annual": 50,
   "min_assets": 20,
   "max_position_weight": 0.15,
+  "max_turnover": 0.75,
+  "portfolio_notional": 1000000,
+  "impact_exponent": 0.5,
+  "adv_window": 20,
+  "research_trials": 3,
+  "data_version": "demo-v1",
   "sector_neutral": true,
   "split_date": "2020-01-01"
 }
@@ -327,11 +364,11 @@ without checking the corporate-action treatment.
 ## Research notes
 
 This is intentionally a research skeleton rather than a production trading
-engine. It does not include order-book simulation, borrow fees, exchange
-calendars, corporate-action adjustment, full optimizer-based portfolio
-constraints, or live trading. The reference engine now supports a basic
-per-name weight cap; production deployment still requires a richer execution
-and risk model.
+engine. It does not include order-book simulation, exchange calendars,
+corporate-action adjustment, full optimizer-based portfolio constraints, or
+live trading. Borrow and ADV-scaled impact are transparent approximations;
+production deployment still requires instrument-level borrow availability,
+venue calendars, and calibrated execution curves.
 The synthetic dataset is only a plumbing check and should not be interpreted as
 evidence of a profitable strategy.
 
@@ -343,8 +380,12 @@ use the cache, a modest `--sleep`, and a small `--max-stocks` smoke test first.
 
 The backtest uses a gross exposure of 1.0: long weights sum to 0.5 and short
 weights sum to -0.5. Turnover is `0.5 × sum(abs(current - previous))`, with the
-initial portfolio compared to zero weights. Net return is gross return minus
-turnover times `cost_bps / 10,000`.
+initial portfolio compared to zero weights. `cost_bps` remains a transparent
+flat baseline; explicit commission/spread/slippage/impact/borrow parameters
+are added on top. If ADV data is available, market impact scales as
+`impact_bps × participation_rate ** impact_exponent`; otherwise the model
+falls back to its base assumption. Daily artifacts expose each cost component
+so a reviewer can reconcile gross to net performance.
 
 ## Development
 

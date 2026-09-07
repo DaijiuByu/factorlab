@@ -3,12 +3,24 @@ import unittest
 import numpy as np
 import pandas as pd
 
+from factorlab.costs import TransactionCostModel
 from factorlab.data import generate_demo_panel
 from factorlab.metrics import bootstrap_mean_ci
 from factorlab.research import BacktestConfig, cost_sensitivity, run_research
 
 
 class ResearchTests(unittest.TestCase):
+    def test_cost_model_uses_base_impact_without_adv(self):
+        model = TransactionCostModel(impact_bps=10.0)
+        self.assertAlmostEqual(model.estimate(100_000.0), 100.0)
+
+    def test_cost_model_scales_impact_with_adv(self):
+        model = TransactionCostModel(impact_bps=10.0)
+        self.assertLess(
+            model.estimate(1_000.0, adv=1_000_000.0),
+            model.estimate(1_000.0, adv=1_000.0),
+        )
+
     def test_research_canonicalizes_unsorted_input(self):
         panel = generate_demo_panel(days=80, assets=12, seed=9)
         shuffled = panel.sample(frac=1.0, random_state=2).reset_index(drop=True)

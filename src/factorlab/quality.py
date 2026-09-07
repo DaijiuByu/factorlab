@@ -7,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from .data import validate_panel
+from .data import validate_point_in_time
 
 
 @dataclass(frozen=True)
@@ -72,7 +72,7 @@ def audit_panel(
     """
 
     cfg = config or QualityConfig()
-    clean = validate_panel(panel)
+    clean = validate_point_in_time(panel)
     issues: list[dict[str, Any]] = []
     if {"open", "high", "low"}.issubset(clean.columns):
         numeric = clean[["open", "high", "low", "close"]].apply(

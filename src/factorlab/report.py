@@ -42,6 +42,8 @@ def markdown_report(result: ResearchResult, *, source: str) -> str:
         "annualized_return",
         "annualized_volatility",
         "sharpe",
+        "sortino",
+        "calmar",
         "max_drawdown",
         "hit_rate",
         "average_turnover",
@@ -50,6 +52,11 @@ def markdown_report(result: ResearchResult, *, source: str) -> str:
         "ic_positive_ratio",
         "ic_observations",
         "ic_tstat_newey_west",
+        "mean_ic_ci_low",
+        "mean_ic_ci_high",
+        "mean_ic_block_ci_low",
+        "mean_ic_block_ci_high",
+        "deflated_sharpe_probability",
     ):
         lines.append(f"| {key} | {_format_metric(result.metrics.get(key))} |")
     if result.split_metrics:
@@ -126,7 +133,7 @@ def markdown_report(result: ResearchResult, *, source: str) -> str:
         "",
         "- `forward_return` is close(t+1) / close(t) - 1. The score is formed at t.",
         "- IC is daily Spearman rank correlation between score and next-session return.",
-        "- Portfolio weights are dollar-neutral and gross 1.0; net return subtracts turnover × cost.",
+        "- Portfolio weights are dollar-neutral and gross 1.0; net return reconciles legacy turnover cost, explicit transaction costs, ADV-scaled impact, and borrow cost.",
         "- Asset metrics are the last available observation per ticker in the selected window.",
         "- The final row of each ticker has no next-session return and is excluded.",
         "- Synthetic demo data is for plumbing checks only; it is not evidence of alpha.",

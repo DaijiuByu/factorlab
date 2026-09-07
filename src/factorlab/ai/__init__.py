@@ -10,3 +10,6 @@ __all__ = [
     "evaluate_formula",
     "validate_formula",
 ]
+from .evaluation import evaluate_factor_proposal
+
+__all__ = ["evaluate_factor_proposal"]

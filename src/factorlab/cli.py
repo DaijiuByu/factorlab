@@ -10,6 +10,8 @@ from pathlib import Path
 import pandas as pd
 
 from .ai.formula import evaluate_formula, validate_formula
+from .ai.evaluation import evaluate_factor_proposal
+from .benchmarks import compare_variants
 from .ai.research_assistant import client_from_environment
 from .akshare_data import fetch_sse_panel, resolve_window
 from .backtest import run_vectorbt, target_weights_from_scores
@@ -61,6 +63,16 @@ def _parser() -> argparse.ArgumentParser:
         "--max-position-weight", type=float,
         help="optional per-name absolute weight cap (for example 0.05)",
     )
+    analyze.add_argument("--max-turnover", type=float)
+    analyze.add_argument("--commission-bps", type=float, default=0.0)
+    analyze.add_argument("--spread-bps", type=float, default=0.0)
+    analyze.add_argument("--slippage-bps", type=float, default=0.0)
+    analyze.add_argument("--impact-bps", type=float, default=0.0)
+    analyze.add_argument("--borrow-bps-annual", type=float, default=0.0)
+    analyze.add_argument("--research-trials", type=int, default=1)
+    analyze.add_argument("--portfolio-notional", type=float, default=1_000_000.0)
+    analyze.add_argument("--impact-exponent", type=float, default=0.5)
+    analyze.add_argument("--adv-window", type=int, default=20)
     analyze.add_argument("--sector-neutral", action="store_true")
     analyze.add_argument(
         "--split-date", help="optional YYYY-MM-DD boundary for before/after metrics"
@@ -90,6 +102,16 @@ def _parser() -> argparse.ArgumentParser:
     live.add_argument("--quantile", type=float, default=0.2)
     live.add_argument("--cost-bps", type=float, default=5.0)
     live.add_argument("--min-assets", type=int, default=20)
+    live.add_argument("--max-position-weight", type=float)
+    live.add_argument("--max-turnover", type=float)
+    live.add_argument("--commission-bps", type=float, default=0.0)
+    live.add_argument("--spread-bps", type=float, default=0.0)
+    live.add_argument("--slippage-bps", type=float, default=0.0)
+    live.add_argument("--impact-bps", type=float, default=0.0)
+    live.add_argument("--borrow-bps-annual", type=float, default=0.0)
+    live.add_argument("--portfolio-notional", type=float, default=1_000_000.0)
+    live.add_argument("--impact-exponent", type=float, default=0.5)
+    live.add_argument("--adv-window", type=int, default=20)
     live.add_argument("--sector-neutral", action="store_true")
     live.add_argument(
         "--split-date", help="optional YYYY-MM-DD boundary for before/after metrics"
@@ -158,6 +180,7 @@ def _parser() -> argparse.ArgumentParser:
     model.add_argument("--train-days", type=int, default=252)
     model.add_argument("--test-days", type=int, default=21)
     model.add_argument("--purge-days", type=int, default=1)
+    model.add_argument("--embargo-days", type=int, default=0)
     model.add_argument("--n-jobs", type=int, default=4)
 
     model_backtest = sub.add_parser(
@@ -180,6 +203,15 @@ def _parser() -> argparse.ArgumentParser:
     model_backtest.add_argument("--cost-bps", type=float, default=5.0)
     model_backtest.add_argument("--min-assets", type=int, default=20)
     model_backtest.add_argument("--max-position-weight", type=float)
+    model_backtest.add_argument("--max-turnover", type=float)
+    model_backtest.add_argument("--commission-bps", type=float, default=0.0)
+    model_backtest.add_argument("--spread-bps", type=float, default=0.0)
+    model_backtest.add_argument("--slippage-bps", type=float, default=0.0)
+    model_backtest.add_argument("--impact-bps", type=float, default=0.0)
+    model_backtest.add_argument("--borrow-bps-annual", type=float, default=0.0)
+    model_backtest.add_argument("--portfolio-notional", type=float, default=1_000_000.0)
+    model_backtest.add_argument("--impact-exponent", type=float, default=0.5)
+    model_backtest.add_argument("--adv-window", type=int, default=20)
     model_backtest.add_argument("--start-date")
     model_backtest.add_argument("--end-date")
     model_backtest.add_argument(
@@ -205,6 +237,26 @@ def _parser() -> argparse.ArgumentParser:
     sensitivity.add_argument("--quantile", type=float, default=0.2)
     sensitivity.add_argument("--min-assets", type=int, default=10)
     sensitivity.add_argument("--max-position-weight", type=float)
+    sensitivity.add_argument("--max-turnover", type=float)
+    sensitivity.add_argument("--commission-bps", type=float, default=0.0)
+    sensitivity.add_argument("--spread-bps", type=float, default=0.0)
+    sensitivity.add_argument("--slippage-bps", type=float, default=0.0)
+    sensitivity.add_argument("--impact-bps", type=float, default=0.0)
+    sensitivity.add_argument("--borrow-bps-annual", type=float, default=0.0)
+    sensitivity.add_argument("--portfolio-notional", type=float, default=1_000_000.0)
+    sensitivity.add_argument("--impact-exponent", type=float, default=0.5)
+    sensitivity.add_argument("--adv-window", type=int, default=20)
+
+    benchmark = sub.add_parser(
+        "compare-variants", help="compare raw and sector-neutral factor variants"
+    )
+    benchmark.add_argument("--input", type=Path, required=True)
+    benchmark.add_argument("--output", type=Path, default=Path("variant_comparison.csv"))
+    benchmark.add_argument("--factor", choices=["momentum", "reversal", "low_volatility"], default="momentum")
+    benchmark.add_argument("--lookback", type=int, default=20)
+    benchmark.add_argument("--quantile", type=float, default=0.2)
+    benchmark.add_argument("--cost-bps", type=float, default=5.0)
+    benchmark.add_argument("--min-assets", type=int, default=10)
 
     ai = sub.add_parser("ai", help="use DeepSeek for a human-reviewed factor proposal")
     ai_sub = ai.add_subparsers(dest="ai_command", required=True)
@@ -220,6 +272,15 @@ def _parser() -> argparse.ArgumentParser:
     formula.add_argument("--formula", required=True)
     formula.add_argument("--input", type=Path, required=True)
     formula.add_argument("--output", type=Path)
+    evaluate = ai_sub.add_parser(
+        "evaluate", help="evaluate an allow-listed proposal with OOS diagnostics"
+    )
+    evaluate.add_argument("--formula", required=True)
+    evaluate.add_argument("--input", type=Path, required=True)
+    evaluate.add_argument("--output", type=Path)
+    evaluate.add_argument("--quantile", type=float, default=0.2)
+    evaluate.add_argument("--cost-bps", type=float, default=5.0)
+    evaluate.add_argument("--min-assets", type=int, default=10)
     return parser
 
 
@@ -270,10 +331,32 @@ def main(argv: list[str] | None = None) -> int:
                 quantile=args.quantile,
                 min_assets=args.min_assets,
                 max_position_weight=args.max_position_weight,
+                max_turnover=args.max_turnover,
+                commission_bps=args.commission_bps,
+                spread_bps=args.spread_bps,
+                slippage_bps=args.slippage_bps,
+                impact_bps=args.impact_bps,
+                borrow_bps_annual=args.borrow_bps_annual,
+                portfolio_notional=args.portfolio_notional,
+                impact_exponent=args.impact_exponent,
+                adv_window=args.adv_window,
             )
             args.output.parent.mkdir(parents=True, exist_ok=True)
             output.to_csv(args.output, index=False)
             print(f"Wrote cost sensitivity to {args.output}")
+            return 0
+        if args.command == "compare-variants":
+            table = compare_variants(
+                load_panel(args.input),
+                factor=args.factor,
+                lookback=args.lookback,
+                quantile=args.quantile,
+                cost_bps=args.cost_bps,
+                min_assets=args.min_assets,
+            )
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            table.to_csv(args.output, index=False)
+            print(f"Wrote variant comparison to {args.output}")
             return 0
         if args.command == "quality":
             panel = load_panel(args.input)
@@ -339,6 +422,7 @@ def main(argv: list[str] | None = None) -> int:
                     train_days=args.train_days,
                     test_days=args.test_days,
                     purge_days=args.purge_days,
+                    embargo_days=args.embargo_days,
                     n_jobs=args.n_jobs,
                 ),
             )
@@ -405,6 +489,15 @@ def main(argv: list[str] | None = None) -> int:
                         cost_bps=args.cost_bps,
                         min_assets=args.min_assets,
                         max_position_weight=args.max_position_weight,
+                        max_turnover=args.max_turnover,
+                        commission_bps=args.commission_bps,
+                        spread_bps=args.spread_bps,
+                        slippage_bps=args.slippage_bps,
+                        impact_bps=args.impact_bps,
+                        borrow_bps_annual=args.borrow_bps_annual,
+                        portfolio_notional=args.portfolio_notional,
+                        impact_exponent=args.impact_exponent,
+                        adv_window=args.adv_window,
                     ),
                     analysis_start=args.start_date,
                     analysis_end=args.end_date,
@@ -416,6 +509,23 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"Net total return: {result.metrics.get('total_return')}")
             return 0
         if args.command == "ai":
+            if args.ai_command == "evaluate":
+                panel = load_panel(args.input)
+                report = evaluate_factor_proposal(
+                    panel,
+                    args.formula,
+                    quantile=args.quantile,
+                    cost_bps=args.cost_bps,
+                    min_assets=args.min_assets,
+                )
+                rendered = json.dumps(report, ensure_ascii=False, indent=2)
+                if args.output:
+                    args.output.parent.mkdir(parents=True, exist_ok=True)
+                    args.output.write_text(rendered, encoding="utf-8")
+                    print(f"Wrote proposal evaluation to {args.output}")
+                else:
+                    print(rendered)
+                return 0
             if args.ai_command == "validate":
                 formula_text = validate_formula(args.formula)
                 panel = load_panel(args.input)
@@ -463,6 +573,16 @@ def main(argv: list[str] | None = None) -> int:
                     cost_bps=args.cost_bps,
                     min_assets=args.min_assets,
                     max_position_weight=args.max_position_weight,
+                    max_turnover=args.max_turnover,
+                    commission_bps=args.commission_bps,
+                    spread_bps=args.spread_bps,
+                    slippage_bps=args.slippage_bps,
+                    impact_bps=args.impact_bps,
+                    borrow_bps_annual=args.borrow_bps_annual,
+                    research_trials=args.research_trials,
+                    portfolio_notional=args.portfolio_notional,
+                    impact_exponent=args.impact_exponent,
+                    adv_window=args.adv_window,
                 ),
                 split_date=args.split_date,
                 analysis_start=args.start_date,
@@ -501,6 +621,16 @@ def main(argv: list[str] | None = None) -> int:
                     quantile=args.quantile,
                     cost_bps=args.cost_bps,
                     min_assets=args.min_assets,
+                    max_position_weight=args.max_position_weight,
+                    max_turnover=args.max_turnover,
+                    commission_bps=args.commission_bps,
+                    spread_bps=args.spread_bps,
+                    slippage_bps=args.slippage_bps,
+                    impact_bps=args.impact_bps,
+                    borrow_bps_annual=args.borrow_bps_annual,
+                    portfolio_notional=args.portfolio_notional,
+                    impact_exponent=args.impact_exponent,
+                    adv_window=args.adv_window,
                 ),
                 split_date=args.split_date,
                 analysis_start=selected_start.strftime("%Y-%m-%d"),
