@@ -136,6 +136,28 @@ def fetch_sse_universe(board: str = "all") -> pd.DataFrame:
     return universe
 
 
+def universe_membership_snapshot(
+    universe: pd.DataFrame,
+    *,
+    effective_date: str | pd.Timestamp,
+    end_date: str | pd.Timestamp | None = None,
+) -> pd.DataFrame:
+    """Convert a constituent snapshot into the membership schema.
+
+    This helper makes the information set explicit. A snapshot is valid for
+    backtests only from ``effective_date`` onward; callers should provide an
+    exchange-provided historical constituent file for earlier dates.
+    """
+
+    if "ticker" not in universe:
+        raise ValueError("universe must contain ticker")
+    result = universe[["ticker"]].copy()
+    result["effective_date"] = pd.Timestamp(effective_date)
+    if end_date is not None:
+        result["end_date"] = pd.Timestamp(end_date)
+    return result.drop_duplicates("ticker").reset_index(drop=True)
+
+
 def _normalize_history(raw: pd.DataFrame, ticker: str) -> pd.DataFrame:
     rename = {
         "日期": "date",
@@ -255,6 +277,7 @@ def fetch_sse_panel(
     cache_dir: str | Path = ".factorlab_cache",
     sleep_seconds: float = 1.0,
     retries: int = 3,
+    universe_asof_date: str | None = None,
 ) -> SSEFetchResult:
     """Fetch a warm-started SSE daily panel for a selected calendar window.
 
@@ -343,5 +366,11 @@ def fetch_sse_panel(
             "requested_stocks": requested,
             "successful_stocks": len(rows),
             "failed_stocks": len(errors),
+            "universe_asof_date": universe_asof_date,
+            "selection_bias_warning": (
+                "current constituent snapshot; do not use for historical alpha claims"
+                if universe_asof_date is None
+                else "snapshot is valid only from universe_asof_date; provide historical membership for earlier dates"
+            ),
         },
     )

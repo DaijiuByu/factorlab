@@ -9,8 +9,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .data import validate_panel
+from .data import filter_panel_by_asof_universe, validate_panel
 from .costs import TransactionCostModel
+from .execution import ExecutionConfig, apply_sell_tax, is_tradeable, round_lot_weight
 from .metrics import (
     compute_asset_metrics,
     compute_metric_summary,
@@ -19,7 +20,7 @@ from .metrics import (
     newey_west_tstat,
 )
 from .provenance import build_run_manifest
-from .risk import RiskConfig, enforce_weight_limits, optimize_scores
+from .risk import RiskConfig, enforce_weight_limits, optimize_scores, shrink_covariance
 from .stats import benjamini_hochberg, block_bootstrap_mean_ci, deflated_sharpe_ratio
 from .signals import column_factor, low_volatility, momentum, reversal
 
@@ -41,6 +42,10 @@ class BacktestConfig:
     impact_exponent: float = 0.5
     adv_window: int = 20
     optimizer_risk_aversion: float = 0.0
+    covariance_window: int = 60
+    covariance_shrinkage: float = 0.1
+    cost_mode: str = "stacked"
+    execution: ExecutionConfig = ExecutionConfig()
 
     def __post_init__(self) -> None:
         if not 0.01 <= self.quantile <= 0.49:
@@ -69,6 +74,12 @@ class BacktestConfig:
             raise ValueError("adv_window must be a positive integer")
         if not np.isfinite(self.optimizer_risk_aversion) or self.optimizer_risk_aversion < 0:
             raise ValueError("optimizer_risk_aversion must be finite and non-negative")
+        if not isinstance(self.covariance_window, int) or self.covariance_window < 2:
+            raise ValueError("covariance_window must be at least 2")
+        if not np.isfinite(self.covariance_shrinkage) or not 0 <= self.covariance_shrinkage <= 1:
+            raise ValueError("covariance_shrinkage must be between 0 and 1")
+        if self.cost_mode not in {"flat", "components", "stacked"}:
+            raise ValueError("cost_mode must be flat, components, or stacked")
 
     @property
     def cost_model(self) -> TransactionCostModel:
@@ -83,6 +94,10 @@ class BacktestConfig:
 
     @property
     def effective_cost_bps(self) -> float:
+        if self.cost_mode == "flat":
+            return self.cost_bps
+        if self.cost_mode == "components":
+            return self.cost_model.fixed_bps
         return self.cost_bps + self.cost_model.fixed_bps
 
 
@@ -91,8 +106,8 @@ class ResearchResult:
     config: dict[str, Any]
     daily: pd.DataFrame
     ic_by_date: pd.DataFrame
-    metrics: dict[str, float | int | None]
-    split_metrics: dict[str, dict[str, float | int | None]]
+    metrics: dict[str, Any]
+    split_metrics: dict[str, dict[str, Any]]
     weights: pd.DataFrame
     asset_metrics: pd.DataFrame
     metric_summary: pd.DataFrame
@@ -155,7 +170,7 @@ def _correlation_p_value(correlation: float, observations: int) -> float | None:
 
 def _metrics(
     returns: pd.Series, turnover: pd.Series | None = None
-) -> dict[str, float | int | None]:
+) -> dict[str, Any]:
     values = pd.to_numeric(returns, errors="coerce").dropna()
     if values.empty:
         return {
@@ -169,6 +184,8 @@ def _metrics(
             "calmar": None,
             "hit_rate": None,
             "average_turnover": None,
+            "annualization_reliable": False,
+            "statistical_warning": "no observations",
         }
     equity = (1.0 + values).cumprod()
     drawdown = equity / equity.cummax() - 1.0
@@ -192,6 +209,11 @@ def _metrics(
         "average_turnover": float(turnover.loc[values.index].mean())
         if turnover is not None
         else None,
+        "annualization_reliable": bool(len(values) >= 60),
+        "statistical_warning": (
+            None if len(values) >= 60 else
+            f"only {len(values)} observations; annualized metrics are indicative"
+        ),
     }
 
 
@@ -199,6 +221,8 @@ def _portfolio(
     scored: pd.DataFrame, config: BacktestConfig
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     usable = scored.dropna(subset=["score", "forward_return"]).copy()
+    execution = config.execution
+    usable["_daily_return"] = usable.groupby("ticker", sort=False)["close"].pct_change()
     # ADV is optional. When available, use a trailing mean of traded notional
     # to convert each weight change into a participation rate. This keeps the
     # impact model explicit while preserving a deterministic fallback for CSVs
@@ -223,42 +247,94 @@ def _portfolio(
     daily_rows: list[dict[str, object]] = []
     weight_rows: list[dict[str, object]] = []
     previous: dict[str, float] = {}
+    entry_dates: dict[str, pd.Timestamp] = {}
+    last_date: pd.Timestamp | None = None
     for date, group in usable.groupby("date", sort=True):
         group = group.drop_duplicates("ticker").copy()
         if len(group) < config.min_assets:
             continue
+        # Filter names that cannot be traded on this date before ranking. A
+        # missing exchange-status column means "unknown", not suspended.
+        long_candidates = group[
+            group.apply(lambda row: is_tradeable(row, side="long", config=execution), axis=1)
+        ]
+        short_candidates = group[
+            group.apply(lambda row: is_tradeable(row, side="short", config=execution), axis=1)
+        ]
         side_count = max(1, int(np.floor(len(group) * config.quantile)))
-        if 2 * side_count > len(group):
+        if execution.market_mode == "long_only":
+            side_count = max(1, int(np.floor(len(long_candidates) * config.quantile)))
+            if len(long_candidates) < side_count:
+                continue
+        elif len(long_candidates) < side_count or len(short_candidates) < side_count:
             continue
-        ranked = group.sort_values(["score", "ticker"], kind="stable")
-        short_names = set(ranked.head(side_count)["ticker"])
-        long_names = set(ranked.tail(side_count)["ticker"])
-        long_weights = _capped_side_weights(
-            sorted(long_names), 0.5, config.max_position_weight
-        )
-        short_weights = _capped_side_weights(
-            sorted(short_names), -0.5, config.max_position_weight
-        )
+        if execution.market_mode == "long_short" and 2 * side_count > len(group):
+            continue
+        ranked_long = long_candidates.sort_values(["score", "ticker"], kind="stable")
+        long_names = set(ranked_long.tail(side_count)["ticker"])
+        long_gross = 1.0 if execution.market_mode == "long_only" else 0.5
+        long_weights = _capped_side_weights(sorted(long_names), long_gross, config.max_position_weight)
+        short_weights: dict[str, float] = {}
+        if execution.market_mode == "long_short":
+            ranked_short = short_candidates.sort_values(["score", "ticker"], kind="stable")
+            short_names = set(ranked_short.head(side_count)["ticker"])
+            short_weights = _capped_side_weights(sorted(short_names), -0.5, config.max_position_weight)
         current = {
             **long_weights,
             **short_weights,
         }
         if config.optimizer_risk_aversion > 0:
             selected = group[group["ticker"].isin(current)].set_index("ticker")["score"]
+            covariance = None
+            history = usable.loc[usable["date"] < date]
+            if not history.empty:
+                returns = history.pivot_table(index="date", columns="ticker", values="_daily_return")
+                returns = returns.reindex(columns=selected.index).tail(config.covariance_window).dropna(axis=1, how="all")
+                if len(returns) >= 2 and set(selected.index).issubset(returns.columns):
+                    covariance = shrink_covariance(
+                        returns[selected.index].fillna(0.0),
+                        shrinkage=config.covariance_shrinkage,
+                    )
             optimized = optimize_scores(
                 selected,
+                covariance=covariance,
                 max_weight=config.max_position_weight or 0.5,
                 gross_exposure=1.0,
-                net_exposure=0.0,
+                net_exposure=1.0 if execution.market_mode == "long_only" else 0.0,
                 risk_aversion=config.optimizer_risk_aversion,
             )
             current = optimized.to_dict()
+            if execution.market_mode == "long_only":
+                current = {ticker: max(0.0, weight) for ticker, weight in current.items()}
+                gross = sum(current.values())
+                if gross > 0:
+                    current = {ticker: weight / gross for ticker, weight in current.items()}
+        # Exchange lot rounding is applied after optimization. For very small
+        # notional/price combinations this may intentionally produce a zero
+        # weight instead of inventing fractional shares.
+        prices = group.set_index("ticker")["close"]
+        current = {
+            ticker: round_lot_weight(
+                weight,
+                price=float(prices[ticker]),
+                notional=config.portfolio_notional,
+                lot_size=execution.lot_size,
+            )
+            for ticker, weight in current.items()
+            if ticker in prices
+        }
+        if execution.t_plus_one:
+            # Conservative T+1 approximation: a long position opened on the
+            # immediately preceding session cannot be sold today.
+            for ticker, opened in list(entry_dates.items()):
+                if last_date is not None and opened == last_date and previous.get(ticker, 0.0) > 0:
+                    current[ticker] = max(current.get(ticker, 0.0), previous[ticker])
         current = enforce_weight_limits(
             current,
             config=RiskConfig(
                 max_position_weight=config.max_position_weight,
                 max_gross_exposure=1.0,
-                max_net_exposure=0.0,
+                max_net_exposure=1.0 if execution.market_mode == "long_only" else 0.0,
                 max_turnover=config.max_turnover,
             ),
             previous=previous,
@@ -292,13 +368,27 @@ def _portfolio(
                 change * notional,
                 adv=float(adv_value) if adv_value is not None and np.isfinite(adv_value) else None,
             )
+            if current.get(name, 0.0) < previous.get(name, 0.0):
+                model_cost += apply_sell_tax(
+                    min(abs(change), max(previous.get(name, 0.0), 0.0)) * notional,
+                    sell_tax_bps=execution.sell_tax_bps,
+                    is_sell=True,
+                )
         model_cost_return = model_cost / notional
-        legacy_cost_return = turnover * config.cost_bps / 10_000.0
+        legacy_cost_return = (
+            turnover * config.cost_bps / 10_000.0 if config.cost_mode in {"flat", "stacked"} else 0.0
+        )
+        if config.cost_mode == "flat":
+            model_cost_return = 0.0
         short_notional = sum(-weight for weight in current.values() if weight < 0)
-        borrow_cost = config.cost_model.estimate(
-            0.0,
-            short_notional=short_notional * notional,
-            holding_days=1.0,
+        borrow_cost = (
+            config.cost_model.estimate(
+                0.0,
+                short_notional=short_notional * notional,
+                holding_days=1.0,
+            )
+            if config.cost_mode != "flat"
+            else 0.0
         )
         borrow_cost_return = borrow_cost / notional
         net = gross - legacy_cost_return - model_cost_return - borrow_cost_return
@@ -317,7 +407,12 @@ def _portfolio(
             {"date": date, "ticker": ticker, "weight": weight}
             for ticker, weight in current.items()
         )
+        old_previous = previous
         previous = current
+        for ticker, weight in current.items():
+            if weight > 0 and old_previous.get(ticker, 0.0) == 0:
+                entry_dates[ticker] = date
+        last_date = date
     return pd.DataFrame(daily_rows), pd.DataFrame(weight_rows)
 
 
@@ -357,7 +452,7 @@ def _capped_side_weights(
 
 def _split_metrics(
     daily: pd.DataFrame, split_date: str | None
-) -> dict[str, dict[str, float | int | None]]:
+) -> dict[str, dict[str, Any]]:
     if not split_date or daily.empty:
         return {}
     boundary = pd.Timestamp(split_date)
@@ -458,10 +553,17 @@ def run_research(
     analysis_end: str | None = None,
     market_summary: pd.DataFrame | None = None,
     data_metadata: dict[str, Any] | None = None,
+    membership: pd.DataFrame | None = None,
 ) -> ResearchResult:
     """Run factor scoring, IC analysis, and a dollar-neutral backtest."""
 
     panel = validate_panel(panel)
+    if direction not in (-1.0, 1.0):
+        raise ValueError("direction must be either 1 or -1")
+    if membership is not None:
+        panel = filter_panel_by_asof_universe(panel, membership)
+        if panel.empty:
+            raise ValueError("point-in-time universe removed every panel observation")
     config = backtest or BacktestConfig()
     if (
         analysis_start
@@ -483,6 +585,8 @@ def run_research(
         )
     else:
         raise ValueError("factor must be momentum, reversal, low_volatility, or column")
+    if factor != "column" and direction == -1.0:
+        scored["score"] = -scored["score"]
     scored = with_forward_returns(scored)
     evaluation = scored
     if analysis_start is not None:
@@ -574,11 +678,28 @@ def run_research(
         "impact_exponent": config.impact_exponent,
         "adv_window": config.adv_window,
         "optimizer_risk_aversion": config.optimizer_risk_aversion,
+        "covariance_window": config.covariance_window,
+        "covariance_shrinkage": config.covariance_shrinkage,
+        "cost_mode": config.cost_mode,
+        "execution": {
+            "market_mode": config.execution.market_mode,
+            "t_plus_one": config.execution.t_plus_one,
+            "lot_size": config.execution.lot_size,
+            "exclude_suspended": config.execution.exclude_suspended,
+            "exclude_limit_up_down": config.execution.exclude_limit_up_down,
+            "sell_tax_bps": config.execution.sell_tax_bps,
+            "require_shortable": config.execution.require_shortable,
+        },
+        "point_in_time_universe": membership is not None,
         "split_date": split_date,
         "analysis_start": analysis_start,
         "analysis_end": analysis_end,
     }
     metadata = dict(data_metadata or {})
+    if sector_neutral and "sector" not in panel.columns:
+        metadata["sector_neutralization_warning"] = (
+            "sector column unavailable; requested neutralization was not applied"
+        )
     metadata["run_manifest"] = build_run_manifest(
         panel,
         config=run_config,

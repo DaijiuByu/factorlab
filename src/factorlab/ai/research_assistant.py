@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import urllib.error
 import urllib.request
@@ -21,9 +22,16 @@ class FactorProposal:
     validation_plan: list[str]
     risk_notes: list[str]
     model: str | None = None
+    prompt_version: str = "factor-proposal-v1"
+    proposal_id: str | None = None
+    approval_status: str = "pending_human_review"
 
     def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        value["proposal_id"] = self.proposal_id or hashlib.sha256(
+            json.dumps({"name": self.name, "formula": self.formula, "model": self.model}, sort_keys=True).encode()
+        ).hexdigest()[:16]
+        return value
 
 
 def _parse_json_content(content: str) -> dict[str, Any]:

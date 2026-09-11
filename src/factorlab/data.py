@@ -55,6 +55,45 @@ def asof_universe(
     return frame.loc[active].drop_duplicates(ticker_column).reset_index(drop=True)
 
 
+def filter_panel_by_asof_universe(
+    panel: pd.DataFrame,
+    membership: pd.DataFrame,
+    *,
+    ticker_column: str = "ticker",
+    effective_column: str = "effective_date",
+    end_column: str = "end_date",
+    date_column: str = "date",
+) -> pd.DataFrame:
+    """Apply historical membership intervals to every panel date.
+
+    Membership is evaluated independently at each observation date, preventing
+    today's constituent list from leaking into historical research.
+    """
+
+    clean = validate_panel(panel)
+    required = {ticker_column, effective_column}
+    missing = required - set(membership.columns)
+    if missing:
+        raise ValueError(f"membership missing columns: {', '.join(sorted(missing))}")
+    frame = membership.copy()
+    frame[effective_column] = pd.to_datetime(frame[effective_column], errors="raise")
+    if end_column in frame:
+        frame[end_column] = pd.to_datetime(frame[end_column], errors="raise")
+    frame[ticker_column] = frame[ticker_column].astype(str).str.strip()
+    valid = frame[frame[ticker_column].ne("")].copy()
+    merged = clean.merge(
+        valid[[ticker_column, effective_column] + ([end_column] if end_column in valid else [])],
+        left_on="ticker",
+        right_on=ticker_column,
+        how="inner",
+    )
+    dates = merged[date_column]
+    active = merged[effective_column] <= dates
+    if end_column in merged:
+        active &= merged[end_column].isna() | (merged[end_column] > dates)
+    return merged.loc[active, clean.columns].drop_duplicates(["date", "ticker"]).reset_index(drop=True)
+
+
 def validate_panel(panel: pd.DataFrame) -> pd.DataFrame:
     """Validate and canonicalize a daily equity panel.
 

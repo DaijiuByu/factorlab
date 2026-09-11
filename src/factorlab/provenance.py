@@ -48,6 +48,7 @@ def build_run_manifest(
     """Build a JSON-serializable manifest for one research run."""
 
     clean = validate_panel(panel)
+    config_payload = json.dumps(config, ensure_ascii=False, sort_keys=True, default=str)
     manifest: dict[str, Any] = {
         "schema_version": 1,
         "source": source,
@@ -56,6 +57,7 @@ def build_run_manifest(
         "date_start": clean["date"].min().strftime("%Y-%m-%d") if not clean.empty else None,
         "date_end": clean["date"].max().strftime("%Y-%m-%d") if not clean.empty else None,
         "panel_sha256": panel_fingerprint(clean),
+        "config_sha256": hashlib.sha256(config_payload.encode("utf-8")).hexdigest(),
         "config": config,
         "data_metadata": data_metadata or {},
         "runtime": {

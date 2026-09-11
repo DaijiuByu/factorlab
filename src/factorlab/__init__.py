@@ -1,10 +1,17 @@
 """FactorLab: a small, reproducible cross-sectional factor research toolkit."""
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
-from .data import asof_universe, generate_demo_panel, load_panel, validate_point_in_time
+from .data import (
+    asof_universe,
+    filter_panel_by_asof_universe,
+    generate_demo_panel,
+    load_panel,
+    validate_point_in_time,
+)
 from .costs import TransactionCostModel
-from .benchmarks import compare_variants
+from .execution import ExecutionConfig
+from .benchmarks import compare_variants, run_benchmark_suite
 from .experiment import ExperimentSpec, load_experiment_spec, run_experiment
 from .metrics import bootstrap_mean_ci, compute_asset_metrics
 from .quality import QualityConfig, QualityResult, audit_panel
@@ -19,6 +26,7 @@ __all__ = [
     "compute_asset_metrics",
     "TransactionCostModel",
     "compare_variants",
+    "run_benchmark_suite",
     "bootstrap_mean_ci",
     "ExperimentSpec",
     "load_experiment_spec",
@@ -29,6 +37,8 @@ __all__ = [
     "generate_demo_panel",
     "validate_point_in_time",
     "asof_universe",
+    "filter_panel_by_asof_universe",
+    "ExecutionConfig",
     "load_panel",
     "run_research",
     "cost_sensitivity",

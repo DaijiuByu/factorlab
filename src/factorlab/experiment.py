@@ -7,7 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from .data import load_panel
+from .execution import ExecutionConfig
 from .quality import QualityConfig, audit_panel, write_quality_artifacts
 from .report import write_artifacts
 from .research import BacktestConfig, ResearchResult, run_research
@@ -47,6 +50,19 @@ class ExperimentSpec:
     end_date: str | None = None
     raw_column: str | None = None
     direction: float = 1.0
+    market_mode: str = "long_short"
+    t_plus_one: bool = True
+    lot_size: int = 100
+    exclude_suspended: bool = True
+    exclude_limit_up_down: bool = True
+    sell_tax_bps: float = 5.0
+    require_shortable: bool = False
+    cost_mode: str = "stacked"
+    covariance_window: int = 60
+    covariance_shrinkage: float = 0.1
+    membership: str | None = None
+    benchmark_suite: list[str] | None = None
+    oos_policy: str = "purged_walk_forward_with_embargo"
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ExperimentSpec":
@@ -75,6 +91,18 @@ class ExperimentSpec:
             impact_exponent=spec.impact_exponent,
             adv_window=spec.adv_window,
             optimizer_risk_aversion=spec.optimizer_risk_aversion,
+            covariance_window=spec.covariance_window,
+            covariance_shrinkage=spec.covariance_shrinkage,
+            cost_mode=spec.cost_mode,
+            execution=ExecutionConfig(
+                market_mode=spec.market_mode,
+                t_plus_one=spec.t_plus_one,
+                lot_size=spec.lot_size,
+                exclude_suspended=spec.exclude_suspended,
+                exclude_limit_up_down=spec.exclude_limit_up_down,
+                sell_tax_bps=spec.sell_tax_bps,
+                require_shortable=spec.require_shortable,
+            ),
         )
         if spec.lookback < 2:
             raise ValueError("lookback must be at least 2")
@@ -106,6 +134,9 @@ def run_experiment(spec: ExperimentSpec) -> ResearchResult:
     """Run quality audit and research from one validated specification."""
 
     panel = load_panel(spec.input)
+    membership = None
+    if spec.membership:
+        membership = pd.read_csv(spec.membership)
     quality = audit_panel(panel, config=QualityConfig())
     output = Path(spec.output)
     write_quality_artifacts(quality, str(output), source=spec.input)
@@ -132,11 +163,24 @@ def run_experiment(spec: ExperimentSpec) -> ResearchResult:
             impact_exponent=spec.impact_exponent,
             adv_window=spec.adv_window,
             optimizer_risk_aversion=spec.optimizer_risk_aversion,
+            covariance_window=spec.covariance_window,
+            covariance_shrinkage=spec.covariance_shrinkage,
+            cost_mode=spec.cost_mode,
+            execution=ExecutionConfig(
+                market_mode=spec.market_mode,
+                t_plus_one=spec.t_plus_one,
+                lot_size=spec.lot_size,
+                exclude_suspended=spec.exclude_suspended,
+                exclude_limit_up_down=spec.exclude_limit_up_down,
+                sell_tax_bps=spec.sell_tax_bps,
+                require_shortable=spec.require_shortable,
+            ),
         ),
         split_date=spec.split_date,
         analysis_start=spec.start_date,
         analysis_end=spec.end_date,
         data_metadata={"data_version": spec.data_version} if spec.data_version else None,
+        membership=membership,
     )
     write_artifacts(result, output, source=spec.input)
     return result

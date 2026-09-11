@@ -11,11 +11,12 @@ import pandas as pd
 
 from .ai.formula import evaluate_formula, validate_formula
 from .ai.evaluation import evaluate_factor_proposal
-from .benchmarks import compare_variants
+from .benchmarks import compare_variants, run_benchmark_suite
 from .ai.research_assistant import client_from_environment
 from .akshare_data import fetch_sse_panel, resolve_window
 from .backtest import run_vectorbt, target_weights_from_scores
 from .data import generate_demo_panel, load_panel
+from .execution import ExecutionConfig
 from .experiment import load_experiment_spec, run_experiment
 from .features import build_features
 from .models import ModelConfig, walk_forward_alpha, write_model_plots
@@ -74,6 +75,13 @@ def _parser() -> argparse.ArgumentParser:
     analyze.add_argument("--impact-exponent", type=float, default=0.5)
     analyze.add_argument("--adv-window", type=int, default=20)
     analyze.add_argument("--optimizer-risk-aversion", type=float, default=0.0)
+    analyze.add_argument("--market-mode", choices=["long_short", "long_only"], default="long_short")
+    analyze.add_argument("--no-t-plus-one", dest="t_plus_one", action="store_false", default=True)
+    analyze.add_argument("--lot-size", type=int, default=100)
+    analyze.add_argument("--sell-tax-bps", type=float, default=5.0)
+    analyze.add_argument("--cost-mode", choices=["flat", "components", "stacked"], default="stacked")
+    analyze.add_argument("--covariance-window", type=int, default=60)
+    analyze.add_argument("--covariance-shrinkage", type=float, default=0.1)
     analyze.add_argument("--sector-neutral", action="store_true")
     analyze.add_argument(
         "--split-date", help="optional YYYY-MM-DD boundary for before/after metrics"
@@ -114,6 +122,13 @@ def _parser() -> argparse.ArgumentParser:
     live.add_argument("--impact-exponent", type=float, default=0.5)
     live.add_argument("--adv-window", type=int, default=20)
     live.add_argument("--optimizer-risk-aversion", type=float, default=0.0)
+    live.add_argument("--market-mode", choices=["long_short", "long_only"], default="long_short")
+    live.add_argument("--no-t-plus-one", dest="t_plus_one", action="store_false", default=True)
+    live.add_argument("--lot-size", type=int, default=100)
+    live.add_argument("--sell-tax-bps", type=float, default=5.0)
+    live.add_argument("--cost-mode", choices=["flat", "components", "stacked"], default="stacked")
+    live.add_argument("--covariance-window", type=int, default=60)
+    live.add_argument("--covariance-shrinkage", type=float, default=0.1)
     live.add_argument("--sector-neutral", action="store_true")
     live.add_argument(
         "--split-date", help="optional YYYY-MM-DD boundary for before/after metrics"
@@ -262,6 +277,18 @@ def _parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--cost-bps", type=float, default=5.0)
     benchmark.add_argument("--min-assets", type=int, default=10)
 
+    suite = sub.add_parser(
+        "benchmark-suite", help="run placebo, direction and market-mode controls"
+    )
+    suite.add_argument("--input", type=Path, required=True)
+    suite.add_argument("--output", type=Path, default=Path("benchmark_suite.csv"))
+    suite.add_argument("--factor", choices=["momentum", "reversal", "low_volatility"], default="momentum")
+    suite.add_argument("--lookback", type=int, default=20)
+    suite.add_argument("--quantile", type=float, default=0.2)
+    suite.add_argument("--cost-bps", type=float, default=5.0)
+    suite.add_argument("--min-assets", type=int, default=10)
+    suite.add_argument("--seed", type=int, default=17)
+
     ai = sub.add_parser("ai", help="use DeepSeek for a human-reviewed factor proposal")
     ai_sub = ai.add_subparsers(dest="ai_command", required=True)
     propose = ai_sub.add_parser("propose", help="propose one factor as validated JSON")
@@ -362,6 +389,20 @@ def main(argv: list[str] | None = None) -> int:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             table.to_csv(args.output, index=False)
             print(f"Wrote variant comparison to {args.output}")
+            return 0
+        if args.command == "benchmark-suite":
+            table = run_benchmark_suite(
+                load_panel(args.input),
+                factor=args.factor,
+                lookback=args.lookback,
+                quantile=args.quantile,
+                cost_bps=args.cost_bps,
+                min_assets=args.min_assets,
+                seed=args.seed,
+            )
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            table.to_csv(args.output, index=False)
+            print(f"Wrote benchmark suite to {args.output}")
             return 0
         if args.command == "quality":
             panel = load_panel(args.input)
@@ -590,6 +631,15 @@ def main(argv: list[str] | None = None) -> int:
                     impact_exponent=args.impact_exponent,
                     adv_window=args.adv_window,
                     optimizer_risk_aversion=args.optimizer_risk_aversion,
+                    cost_mode=args.cost_mode,
+                    covariance_window=args.covariance_window,
+                    covariance_shrinkage=args.covariance_shrinkage,
+                    execution=ExecutionConfig(
+                        market_mode=args.market_mode,
+                        t_plus_one=args.t_plus_one,
+                        lot_size=args.lot_size,
+                        sell_tax_bps=args.sell_tax_bps,
+                    ),
                 ),
                 split_date=args.split_date,
                 analysis_start=args.start_date,
@@ -636,9 +686,18 @@ def main(argv: list[str] | None = None) -> int:
                     impact_bps=args.impact_bps,
                     borrow_bps_annual=args.borrow_bps_annual,
                     portfolio_notional=args.portfolio_notional,
-                    impact_exponent=args.impact_exponent,
-                    adv_window=args.adv_window,
-                    optimizer_risk_aversion=args.optimizer_risk_aversion,
+                        impact_exponent=args.impact_exponent,
+                        adv_window=args.adv_window,
+                        optimizer_risk_aversion=args.optimizer_risk_aversion,
+                        cost_mode=args.cost_mode,
+                        covariance_window=args.covariance_window,
+                        covariance_shrinkage=args.covariance_shrinkage,
+                        execution=ExecutionConfig(
+                            market_mode=args.market_mode,
+                            t_plus_one=args.t_plus_one,
+                            lot_size=args.lot_size,
+                            sell_tax_bps=args.sell_tax_bps,
+                        ),
                 ),
                 split_date=args.split_date,
                 analysis_start=selected_start.strftime("%Y-%m-%d"),

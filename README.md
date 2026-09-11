@@ -29,6 +29,10 @@ Given a CSV with one row per `date` and `ticker`, FactorLab can:
 - enforce an optional per-name position cap while preserving long/short exposure;
 - optionally project selected alpha scores through a transparent risk-aversion
   optimizer before applying exposure, cap, and turnover constraints;
+- model A-share execution constraints (long-only/long-short, T+1, lot size,
+  suspension/limit filters, sell stamp duty and optional shortability);
+- use rolling, diagonally-shrunk covariance in risk-aware optimization and
+  expose statistical warnings when annualization has too few observations;
 - compare net performance across a transaction-cost sensitivity grid;
 - report annualized return, volatility, Sharpe, Sortino, Calmar, drawdown, hit rate, and turnover;
 - write CSV/JSON/Markdown outputs and an equity curve PNG.
@@ -55,6 +59,8 @@ CSV / AkShare -> quality audit -> features -> walk-forward Alpha
 - `experiment`: runs a complete quality-audit and research pipeline from one
   versionable JSON specification.
 - `cost-sensitivity`: writes a table showing how fees change return and Sharpe.
+- `benchmark-suite`: runs raw/sector-neutral, reversed-direction, long-only,
+  and random-placebo controls under identical assumptions.
 
 Research utilities also include an append-only JSONL factor registry,
 point-in-time release/effective-date validation, and optional CSV/Parquet
@@ -359,7 +365,10 @@ Required input columns are `date`, `ticker`, and positive `close`. Optional
 columns such as `sector`, `market_cap`, and `earnings_yield` are left to the
 researcher. The input data should already be point-in-time aligned; FactorLab
 cannot repair survivorship bias, delistings, stale fundamentals, or corporate
-action errors for you.
+action errors for you. For historical constituents, pass a `membership` CSV
+with `ticker,effective_date,end_date` in an experiment; membership is applied
+independently at each date. Live AkShare runs use a current snapshot and record
+a survivorship-bias warning in `data_metadata`.
 
 For live AkShare data, `--adjust hfq` is the default because AkShare documents
 post-adjusted prices as a common choice for quantitative research. Use
@@ -385,7 +394,8 @@ data. AkShare and the upstream market data sites can also rate-limit requests;
 use the cache, a modest `--sleep`, and a small `--max-stocks` smoke test first.
 
 The backtest uses a gross exposure of 1.0: long weights sum to 0.5 and short
-weights sum to -0.5. Turnover is `0.5 × sum(abs(current - previous))`, with the
+weights sum to -0.5 in long/short mode; long-only mode invests 1.0 gross.
+Turnover is `0.5 × sum(abs(current - previous))`, with the
 initial portfolio compared to zero weights. `cost_bps` remains a transparent
 flat baseline; explicit commission/spread/slippage/impact/borrow parameters
 are added on top. If ADV data is available, market impact scales as
